@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-PySide6 app with QOpenGLWidget video playback (hardware-accelerated) and interactive overlay.
+PySide6 app with QOpenGLWidget video and image display + interactive overlay.
 
 Features:
-- 4K+ hardware-accelerated video using OpenGL
-- Draw bounding boxes and polygons with transparent fill
-- Dashed grey outline animation (CCW)
+- Open video (hardware-accelerated with VLC) or images
+- Draw bounding boxes and polygons
+- Dashed outline animation
 - Save shapes to COCO JSON
 """
 
@@ -15,36 +15,30 @@ import json
 from typing import List, Tuple
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QFileDialog, QToolBar, QLabel, QStatusBar, QVBoxLayout, QWidget
+    QApplication, QMainWindow, QFileDialog, QToolBar, QLabel,
+    QStatusBar, QVBoxLayout, QWidget
 )
-from PySide6.QtCore import Qt, QEvent
-from PySide6.QtGui import QAction
-
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtCore import Qt, QEvent, QTimer
+from PySide6.QtGui import QAction, QImage
 
 import vlc
 
 from app.ui.overlay_widget import OverlayWidget
+from app.ui.video_widget import VideoWidget
 
 HOME = os.path.expanduser("~")
 THYRA_DIR = os.path.join(HOME, "Thyra")
 THYRA_VIDEO_DIR = os.path.join(THYRA_DIR, "video")
+THYRA_IMAGE_DIR = os.path.join(THYRA_DIR, "img")
 os.makedirs(THYRA_VIDEO_DIR, exist_ok=True)
-os.makedirs(THYRA_DIR, exist_ok=True)
-
-
-class VideoWidget(QOpenGLWidget):
-    """QOpenGLWidget used for hardware-accelerated video output."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumSize(320, 240)
-        self.setAutoFillBackground(False)
+os.makedirs(THYRA_IMAGE_DIR, exist_ok=True)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, app):
         super().__init__()
-        self.setWindowTitle("PySide6 + OpenGL Video + Overlay")
+        self.app = app
+        self.setWindowTitle("PySide6 + OpenGL Video/Image + Overlay")
         self.showMaximized()
 
         # VLC
@@ -57,7 +51,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0,0,0,0)
 
-        # Video widget
+        # Video/Image widget
         self.video_widget = VideoWidget(self)
         layout.addWidget(self.video_widget)
 
@@ -81,51 +75,79 @@ class MainWindow(QMainWindow):
         self.path_label = QLabel("No file")
         self.status.addWidget(self.path_label)
 
-        self.current_video_path = None
+        self.current_file_path: str | None = None
+        self.current_file_type: str | None = None  # 'video' or 'image'
 
         # VLC output attach
         self._attach_vlc_output()
 
-    def _setup_toolbar(self, toolbar):
-        self.action_open = QAction("Open", self)
-        self.action_open.triggered.connect(self.open_video_dialog)
-        toolbar.addAction(self.action_open)
+        # poll worker responses
+        self.poll_timer = QTimer(self)
+        self.poll_timer.setInterval(50)
+        self.poll_timer.timeout.connect(self.poll_workers)
+        self.poll_timer.start()
 
-        self.action_play = QAction("Play", self)
+    # -----------------------------
+    # Toolbar
+    # -----------------------------
+    def _setup_toolbar(self, toolbar):
+        # Open video
+        self.action_open_video = QAction("Open Video")
+        self.action_open_video.triggered.connect(self.open_video_dialog)
+        toolbar.addAction(self.action_open_video)
+
+        # Open image
+        self.action_open_image = QAction("Open Image")
+        self.action_open_image.triggered.connect(self.open_image_dialog)
+        toolbar.addAction(self.action_open_image)
+
+        toolbar.addSeparator()
+
+        # Video control
+        self.action_play = QAction("Play")
         self.action_play.triggered.connect(self.play_pause)
         toolbar.addAction(self.action_play)
 
-        self.action_stop = QAction("Stop", self)
+        self.action_stop = QAction("Stop")
         self.action_stop.triggered.connect(self.stop)
         toolbar.addAction(self.action_stop)
 
         toolbar.addSeparator()
 
-        self.action_mode_box = QAction("Box Mode", self)
+        # Drawing mode
+        self.action_mode_box = QAction("Box Mode")
         self.action_mode_box.setCheckable(True)
         self.action_mode_box.setChecked(True)
         self.action_mode_box.triggered.connect(lambda: self.set_draw_mode("box"))
         toolbar.addAction(self.action_mode_box)
 
-        self.action_mode_poly = QAction("Polygon Mode", self)
+        self.action_mode_poly = QAction("Polygon Mode")
         self.action_mode_poly.setCheckable(True)
         self.action_mode_poly.triggered.connect(lambda: self.set_draw_mode("poly"))
         toolbar.addAction(self.action_mode_poly)
 
         toolbar.addSeparator()
-        self.action_clear = QAction("Clear Shapes", self)
+
+        # Overlay actions
+        self.action_clear = QAction("Clear Shapes")
         self.action_clear.triggered.connect(self.overlay.clear_shapes)
         toolbar.addAction(self.action_clear)
 
-        self.action_save = QAction("Save COCO", self)
+        self.action_save = QAction("Save COCO")
         self.action_save.triggered.connect(self.save_coco)
         toolbar.addAction(self.action_save)
 
+    # -----------------------------
+    # Event filter
+    # -----------------------------
     def eventFilter(self, obj, ev):
         if obj is self.video_widget and ev.type() == QEvent.Type.Resize:
             self.overlay.setGeometry(self.video_widget.geometry())
         return super().eventFilter(obj, ev)
 
+    # -----------------------------
+    # VLC output
+    # -----------------------------
     def _attach_vlc_output(self):
         if sys.platform.startswith("darwin"):
             try:
@@ -143,6 +165,9 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print("set_xwindow failed:", e)
 
+    # -----------------------------
+    # Open video/image
+    # -----------------------------
     def open_video_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open video", THYRA_VIDEO_DIR,
                                               "Video files (*.mov *.mp4 *.mkv *.avi *.webm);;All files (*)")
@@ -153,15 +178,45 @@ class MainWindow(QMainWindow):
         if not os.path.exists(path):
             self.status.showMessage("File not found", 3000)
             return
-        self.current_video_path = path
+        self.current_file_path = path
+        self.current_file_type = "video"
         self.path_label.setText(path)
+        self.video_widget.image = None  # clear previous image
+
         media = self.vlc_instance.media_new(path)
         self.mediaplayer.set_media(media)
         self._attach_vlc_output()
         self.action_play.setText("Pause")
         self.mediaplayer.play()
 
+    def open_image_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open image", THYRA_IMAGE_DIR,
+                                              "Image files (*.png *.jpg *.jpeg *.bmp *.tiff *.gif);;All files (*)")
+        if path:
+            self.open_image(path)
+
+    def open_image(self, path: str):
+        if not os.path.exists(path):
+            self.status.showMessage("File not found", 3000)
+            return
+        self.current_file_path = path
+        self.current_file_type = "image"
+        self.path_label.setText(path)
+        self.mediaplayer.stop()
+        self.action_play.setText("Play")
+        img = QImage(path)
+        if img.isNull():
+            self.status.showMessage("Failed to load image", 3000)
+            return
+        self.video_widget.image = img
+        self.video_widget.update()
+
+    # -----------------------------
+    # Video controls
+    # -----------------------------
     def play_pause(self):
+        if self.current_file_type != "video":
+            return
         if self.mediaplayer.is_playing():
             self.mediaplayer.pause()
             self.action_play.setText("Play")
@@ -170,23 +225,31 @@ class MainWindow(QMainWindow):
             self.action_play.setText("Pause")
 
     def stop(self):
+        if self.current_file_type != "video":
+            return
         self.mediaplayer.stop()
         self.action_play.setText("Play")
 
+    # -----------------------------
+    # Drawing
+    # -----------------------------
     def set_draw_mode(self, mode: str):
         self.overlay.set_mode(mode)
         self.action_mode_box.setChecked(mode=="box")
         self.action_mode_poly.setChecked(mode=="poly")
 
+    # -----------------------------
+    # Save COCO
+    # -----------------------------
     def save_coco(self):
-        if not self.current_video_path:
-            self.status.showMessage("No video open", 3000)
+        if not self.current_file_path:
+            self.status.showMessage("No file open", 3000)
             return
 
         canvas_w = self.overlay.width()
         canvas_h = self.overlay.height()
 
-        images = [{"id": 1, "file_name": os.path.basename(self.current_video_path),
+        images = [{"id": 1, "file_name": os.path.basename(self.current_file_path),
                    "width": canvas_w, "height": canvas_h}]
         annotations = []
         categories = [{"id":1, "name":"shape","supercategory":"shape"}]
@@ -216,7 +279,7 @@ class MainWindow(QMainWindow):
             ann_id += 1
 
         coco = {"images":images,"annotations":annotations,"categories":categories}
-        basename = os.path.splitext(os.path.basename(self.current_video_path))[0]
+        basename = os.path.splitext(os.path.basename(self.current_file_path))[0]
         out_path = os.path.join(THYRA_DIR, f"{basename}_shapes_coco.json")
         try:
             with open(out_path,"w",encoding="utf-8") as f:
@@ -236,12 +299,26 @@ class MainWindow(QMainWindow):
             area += x1*y2 - x2*y1
         return area/2.0
 
-
-def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
-
-if __name__=="__main__":
-    main()
+    def poll_workers(self):
+        # poll for responses from worker processes
+        try:
+            while not self.app.res_q.empty():
+                msg = self.app.res_q.get_nowait()
+                # handle segment stub
+                if msg.get('mask') is not None:
+                    #self.canvas.apply_mask(msg['mask'])
+                    self.status.showMessage('Mask received (stub)')
+                if msg.get('count') is not None:
+                    self.status.showMessage(
+                        f"Density count (stub): {msg['count']}")
+        except Exception:
+            pass
+# def main():
+#     app = QApplication(sys.argv)
+#     window = MainWindow()
+#     window.show()
+#     sys.exit(app.exec())
+#
+#
+# if __name__=="__main__":
+#     main()
