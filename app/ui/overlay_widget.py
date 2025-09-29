@@ -7,6 +7,12 @@ from PySide6.QtWidgets import QWidget
 
 from app.ui.vector_masks import BoundingBox, PolygonShape
 
+PEN_WIDTH = 2
+
+DASH_OFFSET = 0.0
+
+ANIMATION_MSEC = 30
+
 
 class OverlayWidget(QWidget):
     """Transparent overlay for drawing boxes and polygons with improved polygon UX."""
@@ -26,13 +32,16 @@ class OverlayWidget(QWidget):
         self.drawing_poly = False
         self.current_poly: List[Tuple[float, float]] = []
 
-        self.dash_offset = 0.0
+        self.dash_offset = DASH_OFFSET
         self.anim_timer = QTimer(self)
-        self.anim_timer.setInterval(30)
+        self.anim_timer.setInterval(ANIMATION_MSEC)
         self.anim_timer.timeout.connect(self._on_anim_tick)
         self.anim_timer.start()
 
         self.mode = "box"
+        self.box_color = QColor(255, 250, 240)
+        self.live_box_color = QColor(226, 61, 40)
+        self.feedback_point_color = QColor(240, 128, 128)
 
     def set_mode(self, mode: str):
         assert mode in ("box", "poly")
@@ -108,7 +117,7 @@ class OverlayWidget(QWidget):
             if len(poly.points) < 3:
                 continue
             qpoints = [QPointF(x, y) for x, y in poly.points]
-            pen = QPen(QColor(100, 100, 100), 2, Qt.PenStyle.CustomDashLine)
+            pen = QPen(self.box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([6.0, 6.0])
             pen.setDashOffset(self.dash_offset)
             painter.setPen(pen)
@@ -118,7 +127,7 @@ class OverlayWidget(QWidget):
         # Draw existing bounding boxes
         for box in self.boxes:
             rect = QRectF(box.x, box.y, box.w, box.h)
-            pen = QPen(QColor(100, 100, 100), 2, Qt.PenStyle.CustomDashLine)
+            pen = QPen(self.box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
             painter.setPen(pen)
@@ -130,7 +139,7 @@ class OverlayWidget(QWidget):
             p1, p2 = self.box_start, self.box_current
             rect = QRectF(min(p1.x(), p2.x()), min(p1.y(), p2.y()),
                           abs(p2.x() - p1.x()), abs(p2.y() - p1.y()))
-            pen = QPen(QColor(120, 120, 120), 2, Qt.PenStyle.CustomDashLine)
+            pen = QPen(self.live_box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
             painter.setPen(pen)
@@ -140,8 +149,8 @@ class OverlayWidget(QWidget):
         # Live polygon preview
         if self.drawing_poly and self.current_poly:
             pts = [QPointF(x, y) for x, y in self.current_poly]
-            if len(pts) >= 2:
-                pen = QPen(QColor(120, 120, 120), 2, Qt.PenStyle.CustomDashLine)
+            if len(pts) >= PEN_WIDTH:
+                pen = QPen(self.live_box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
                 pen.setDashPattern([6.0, 6.0])
                 pen.setDashOffset(self.dash_offset)
                 painter.setPen(pen)
@@ -149,6 +158,6 @@ class OverlayWidget(QWidget):
                 painter.drawPolyline(QPolygonF(pts))
             # draw small feedback points
             for p in pts:
-                painter.setBrush(QBrush(QColor(255, 255, 255)))
+                painter.setBrush(QBrush(self.feedback_point_color))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawEllipse(p, 3, 3)
