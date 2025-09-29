@@ -162,6 +162,17 @@ class OverlayWidget(QWidget):
             self.current_poly = []
             self.update()
 
+    def keyPressEvent(self, event):
+        if self.mode == "poly" and self.drawing_poly:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if len(self.current_poly) >= 3:
+                    poly = PolygonShape(points=list(self.current_poly),
+                                        id=str(uuid.uuid4()))
+                    self.polygons.append(poly)
+                self.drawing_poly = False
+                self.current_poly = []
+                self.update()
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.drawing_box and self.mode == "box":
             self.drawing_box = False
@@ -190,78 +201,92 @@ class OverlayWidget(QWidget):
         self.polygons = []
         self.update()
 
+
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Draw existing polygons (filled translucent + animated dashed outline)
+        # -----------------------------
+        # Draw existing polygons
+        # -----------------------------
         for poly in self.polygons:
             qpoints = [QPointF(x, y) for (x, y) in poly.points]
             if len(qpoints) < 3:
                 continue
-            # fill translucent
-            brush = QBrush(QColor(0, 0, 0, 60))
+
+            # Fill translucent (transparent)
+            brush = QBrush(QColor(0, 0, 0, 30))  # alpha 30
             painter.setBrush(brush)
-            painter.setPen(Qt.NoPen)
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.drawPolygon(*qpoints)
 
-            # dashed outline
-            pen = QPen(QColor(100, 100, 100), 2, Qt.CustomDashLine)
-            dash_pattern = [6.0, 6.0]
-            pen.setDashPattern(dash_pattern)
+            # Animated dashed outline
+            pen = QPen(QColor(100, 100, 100), 2, Qt.PenStyle.CustomDashLine)
+            pen.setDashPattern([6.0, 6.0])
             pen.setDashOffset(self.dash_offset)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
             painter.drawPolygon(*qpoints)
 
-        # Draw existing boxes (filled translucent + animated dashed outline)
+        # -----------------------------
+        # Draw existing bounding boxes
+        # -----------------------------
         for box in self.boxes:
             rect = QRectF(box.x, box.y, box.w, box.h)
-            # fill
-            painter.setBrush(QBrush(QColor(0, 0, 0, 60)))
-            painter.setPen(Qt.NoPen)
+
+            # Fill transparent
+            painter.setBrush(QBrush(QColor(0, 0, 0, 30)))  # alpha 30
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRect(rect)
 
-            # dashed outline
-            pen = QPen(QColor(100, 100, 100), 2, Qt.CustomDashLine)
+            # Animated dashed outline
+            pen = QPen(QColor(100, 100, 100), 2, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
             painter.drawRect(rect)
 
+        # -----------------------------
         # Live-drawing preview for box
+        # -----------------------------
         if self.drawing_box and self.mode == "box":
-            p1 = self.box_start
-            p2 = self.box_current
+            p1, p2 = self.box_start, self.box_current
             rect = QRectF(min(p1.x(), p2.x()), min(p1.y(), p2.y()),
                           abs(p2.x() - p1.x()), abs(p2.y() - p1.y()))
-            painter.setBrush(QBrush(QColor(0, 0, 0, 40)))
-            painter.setPen(Qt.NoPen)
+
+            # Transparent fill
+            painter.setBrush(QBrush(QColor(0, 0, 0, 20)))
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRect(rect)
 
-            pen = QPen(QColor(120, 120, 120), 2, Qt.CustomDashLine)
+            # Dashed outline
+            pen = QPen(QColor(120, 120, 120), 2, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
             painter.drawRect(rect)
 
-        # Live-drawing preview for polygon (line to current mouse)
+        # -----------------------------
+        # Live-drawing preview for polygon
+        # -----------------------------
         if self.drawing_poly and self.mode == "poly":
             pts = [QPointF(x, y) for (x, y) in self.current_poly]
             if hasattr(self, "_mouse_pos"):
-                pts.append(QPointF(self._mouse_pos[0], self._mouse_pos[1]))
+                pts.append(QPointF(*self._mouse_pos))
+
             if pts:
-                # draw polyline
-                pen = QPen(QColor(120, 120, 120), 2, Qt.CustomDashLine)
+                # Dashed polyline
+                pen = QPen(QColor(120, 120, 120), 2, Qt.PenStyle.CustomDashLine)
                 pen.setDashPattern([6.0, 6.0])
                 pen.setDashOffset(self.dash_offset)
                 painter.setPen(pen)
-                painter.setBrush(Qt.NoBrush)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
                 for i in range(len(pts) - 1):
                     painter.drawLine(pts[i], pts[i + 1])
-                # draw points
+
+                # Draw small points for user feedback
                 for p in pts:
                     painter.setBrush(QBrush(QColor(255, 255, 255)))
                     painter.drawEllipse(p, 3, 3)
@@ -292,15 +317,15 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.video_frame)
 
         # overlay sits on top of video_frame
-        self.overlay = OverlayWidget(self.video_frame)
-        self.overlay.setGeometry(self.video_frame.rect())
+        # overlay as sibling, parent=central widget
+        self.overlay = OverlayWidget(central)
+        self.overlay.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.overlay.raise_()  # bring on top
         self.overlay.show()
 
         # install event filter on video_frame to track resize
         self.video_frame.installEventFilter(self)
-
-        # overlay covers same geometry as video_frame; we'll position it manually in resizeEvent
-        lay.addWidget(self.video_frame)
 
         # toolbar with QAction controls
         toolbar = QToolBar("Controls")
@@ -365,9 +390,10 @@ class MainWindow(QMainWindow):
         self._attach_vlc_output()
 
     def eventFilter(self, obj, ev):
-        if obj is self.video_frame and ev.type() == QEvent.Type.Resize:
-            # update overlay to exactly cover video_frame
-            self.overlay.setGeometry(self.video_frame.rect())
+        if obj is self.video_frame and ev.type() == QEvent.Resize:
+            # move overlay to cover video_frame
+            geo = self.video_frame.geometry()
+            self.overlay.setGeometry(geo)
         return super().eventFilter(obj, ev)
 
     def resizeEvent(self, event):
