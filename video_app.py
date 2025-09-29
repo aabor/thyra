@@ -18,9 +18,8 @@ Features:
 import sys
 import os
 import json
-import math
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import List, Tuple
 
 # Ensure spawn regime if any multiprocessing is used later (cross-platform safety)
@@ -94,7 +93,8 @@ class OverlayWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Accept mouse events so user can draw
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+                          False)
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -202,83 +202,50 @@ class OverlayWidget(QWidget):
         self.polygons = []
         self.update()
 
-
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # -----------------------------
-        # Draw existing polygons
-        # -----------------------------
+        # Draw existing polygons (only outline)
         for poly in self.polygons:
             qpoints = [QPointF(x, y) for (x, y) in poly.points]
             if len(qpoints) < 3:
                 continue
-
-            # Fill translucent (transparent)
-            brush = QBrush(QColor(0, 0, 0, 30))  # alpha 30
-            painter.setBrush(brush)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawPolygon(*qpoints)
-
-            # Animated dashed outline
             pen = QPen(QColor(100, 100, 100), 2, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([6.0, 6.0])
             pen.setDashOffset(self.dash_offset)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPolygon(*qpoints)
 
-        # -----------------------------
-        # Draw existing bounding boxes
-        # -----------------------------
+        # Draw existing bounding boxes (only outline)
         for box in self.boxes:
             rect = QRectF(box.x, box.y, box.w, box.h)
-
-            # Fill transparent
-            painter.setBrush(QBrush(QColor(0, 0, 0, 30)))  # alpha 30
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRect(rect)
-
-            # Animated dashed outline
             pen = QPen(QColor(100, 100, 100), 2, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
 
-        # -----------------------------
-        # Live-drawing preview for box
-        # -----------------------------
+        # Live-drawing preview for box (only outline)
         if self.drawing_box and self.mode == "box":
             p1, p2 = self.box_start, self.box_current
             rect = QRectF(min(p1.x(), p2.x()), min(p1.y(), p2.y()),
                           abs(p2.x() - p1.x()), abs(p2.y() - p1.y()))
-
-            # Transparent fill
-            painter.setBrush(QBrush(QColor(0, 0, 0, 20)))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRect(rect)
-
-            # Dashed outline
             pen = QPen(QColor(120, 120, 120), 2, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
 
-        # -----------------------------
         # Live-drawing preview for polygon
-        # -----------------------------
         if self.drawing_poly and self.mode == "poly":
             pts = [QPointF(x, y) for (x, y) in self.current_poly]
             if hasattr(self, "_mouse_pos"):
                 pts.append(QPointF(*self._mouse_pos))
-
             if pts:
-                # Dashed polyline
                 pen = QPen(QColor(120, 120, 120), 2, Qt.PenStyle.CustomDashLine)
                 pen.setDashPattern([6.0, 6.0])
                 pen.setDashOffset(self.dash_offset)
@@ -286,8 +253,7 @@ class OverlayWidget(QWidget):
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 for i in range(len(pts) - 1):
                     painter.drawLine(pts[i], pts[i + 1])
-
-                # Draw small points for user feedback
+                # draw points
                 for p in pts:
                     painter.setBrush(QBrush(QColor(255, 255, 255)))
                     painter.drawEllipse(p, 3, 3)
