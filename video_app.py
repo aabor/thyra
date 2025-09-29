@@ -33,8 +33,8 @@ except Exception:
     pass
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog,
-    QToolBar, QLabel, QStatusBar, QPushButton
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QFileDialog,
+    QToolBar, QLabel, QStatusBar
 )
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer, QEvent
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QAction
@@ -83,8 +83,8 @@ class VideoFrameWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Allow stacking overlay widgets on top
-        self.setAttribute(Qt.WA_OpaquePaintEvent)
-        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setMinimumSize(320, 240)
 
 
@@ -94,10 +94,10 @@ class OverlayWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Accept mouse events so user can draw
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setMouseTracking(True)
-        self.setAttribute(Qt.WA_NoSystemBackground)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         # Shapes storage
         self.boxes: List[BoundingBox] = []
@@ -126,7 +126,7 @@ class OverlayWidget(QWidget):
         self.mode = mode
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             if self.mode == "box":
                 self.drawing_box = True
                 self.box_start = event.position()
@@ -164,7 +164,7 @@ class OverlayWidget(QWidget):
 
     def keyPressEvent(self, event):
         if self.mode == "poly" and self.drawing_poly:
-            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 if len(self.current_poly) >= 3:
                     poly = PolygonShape(points=list(self.current_poly),
                                         id=str(uuid.uuid4()))
@@ -174,7 +174,8 @@ class OverlayWidget(QWidget):
                 self.update()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self.drawing_box and self.mode == "box":
+        if event.button() == Qt.MouseButton.LeftButton and self.drawing_box and \
+            self.mode == "box":
             self.drawing_box = False
             p1 = self.box_start
             p2 = self.box_current
@@ -390,7 +391,7 @@ class MainWindow(QMainWindow):
         self._attach_vlc_output()
 
     def eventFilter(self, obj, ev):
-        if obj is self.video_frame and ev.type() == QEvent.Resize:
+        if obj is self.video_frame and ev.type() == QEvent.Type.Resize:
             # move overlay to cover video_frame
             geo = self.video_frame.geometry()
             self.overlay.setGeometry(geo)
