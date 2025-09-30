@@ -16,20 +16,18 @@ from typing import List, Tuple
 
 from PySide6.QtWidgets import (
     QMainWindow, QFileDialog, QToolBar, QLabel,
-    QStatusBar, QVBoxLayout, QWidget
+    QStatusBar, QVBoxLayout, QWidget, QStyle
 )
-from PySide6.QtCore import Qt, QEvent, QTimer
-from PySide6.QtGui import QAction, QImage
+from PySide6.QtCore import Qt, QEvent, QTimer, QSize
+from PySide6.QtGui import QAction, QImage, QIcon
 
 import vlc
 
 from app.ui.overlay_widget import OverlayWidget
 from app.ui.video_widget import VideoWidget
+from configuration import ICO_DIR, THYRA_DIR, THYRA_VIDEO_DIR, THYRA_IMAGE_DIR
+from thyra_document import ThyraSettings, ThyraDocument
 
-HOME = os.path.expanduser("~")
-THYRA_DIR = os.path.join(HOME, "Thyra")
-THYRA_VIDEO_DIR = os.path.join(THYRA_DIR, "video")
-THYRA_IMAGE_DIR = os.path.join(THYRA_DIR, "img")
 os.makedirs(THYRA_VIDEO_DIR, exist_ok=True)
 os.makedirs(THYRA_IMAGE_DIR, exist_ok=True)
 
@@ -37,9 +35,17 @@ os.makedirs(THYRA_IMAGE_DIR, exist_ok=True)
 class MainWindow(QMainWindow):
     def __init__(self, app):
         super().__init__()
+        self.document: ThyraDocument = ThyraDocument()
+        self.settings: ThyraSettings = ThyraSettings()
+        self.icon_pause = self.style().standardIcon(
+            QStyle.StandardPixmap.SP_MediaPause)
+        self.icon_play = self.style().standardIcon(
+            QStyle.StandardPixmap.SP_MediaPlay)
         self.app = app
         self.setWindowTitle("PySide6 + OpenGL Video/Image + Overlay")
         self.showMaximized()
+
+        self.load_settings()
 
         # VLC
         self.vlc_instance = vlc.Instance("--vout=gl")
@@ -57,6 +63,7 @@ class MainWindow(QMainWindow):
 
         # Overlay
         self.overlay = OverlayWidget(central)
+        self.overlay.main_window = self
         self.overlay.setGeometry(self.video_widget.geometry())
         self.overlay.raise_()
         self.overlay.show()
@@ -66,6 +73,7 @@ class MainWindow(QMainWindow):
 
         # Toolbar
         toolbar = QToolBar("Controls")
+        toolbar.setIconSize(QSize(18, 18))
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
         self._setup_toolbar(toolbar)
 
@@ -74,9 +82,6 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
         self.path_label = QLabel("No file")
         self.status.addWidget(self.path_label)
-
-        self.current_file_path: str | None = None
-        self.current_file_type: str | None = None  # 'video' or 'image'
 
         # VLC output attach
         self._attach_vlc_output()
@@ -91,38 +96,76 @@ class MainWindow(QMainWindow):
     # Toolbar
     # -----------------------------
     def _setup_toolbar(self, toolbar):
+        # Create document
+        self.action_create_document = QAction(
+            QIcon(os.path.join(ICO_DIR, 'document--pencil.png')),
+            "Create", self)
+        toolbar.addAction(self.action_create_document)
+        self.action_create_document.triggered.connect(
+            self.create_document_dialog)
+        # Open document
+        self.action_open_document = QAction(
+            QIcon(os.path.join(ICO_DIR, 'folder-horizontal-open.png')),
+            "Create", self)
+        toolbar.addAction(self.action_open_document)
+        self.action_open_document.triggered.connect(
+            self.open_document_dialog)
+        # Duplicate document
+        self.action_duplicate_document = QAction(
+            QIcon(os.path.join(ICO_DIR, 'document-copy.png')),
+            "Duplicate", self)
+        toolbar.addAction(self.action_duplicate_document)
+        self.action_duplicate_document.triggered.connect(
+            self.duplicate_document)
+        # Export document to COCO JSON
+        self.action_export_document = QAction(
+            QIcon(os.path.join(ICO_DIR, 'document-export.png')),
+            "Export COCO", self)
+        toolbar.addAction(self.action_export_document)
+        self.action_export_document.triggered.connect(
+            self.save_coco)
+
         # Open video
-        self.action_open_video = QAction("Open Video")
+        self.action_open_video = QAction(
+            QIcon(os.path.join(ICO_DIR, 'folder-open-film.png')),
+            "Open video", self)
         self.action_open_video.triggered.connect(self.open_video_dialog)
         toolbar.addAction(self.action_open_video)
 
         # Open image
-        self.action_open_image = QAction("Open Image")
+        self.action_open_image = QAction(
+            QIcon(os.path.join(ICO_DIR, 'folder-open-image.png')),
+            "Open image", self)
         self.action_open_image.triggered.connect(self.open_image_dialog)
         toolbar.addAction(self.action_open_image)
 
         toolbar.addSeparator()
 
         # Video control
-        self.action_play = QAction("Play")
+        self.action_play = QAction(self.icon_play, "Play", self)
         self.action_play.triggered.connect(self.play_pause)
         toolbar.addAction(self.action_play)
 
-        self.action_stop = QAction("Stop")
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        self.action_stop = QAction(icon, "Stop")
         self.action_stop.triggered.connect(self.stop)
         toolbar.addAction(self.action_stop)
 
         toolbar.addSeparator()
 
         # Drawing mode
-        self.action_mode_box = QAction("Box Mode")
+        self.action_mode_box = QAction(
+            QIcon(os.path.join(ICO_DIR, 'layer-shape.png')),
+            "Box mode", self)
         self.action_mode_box.setCheckable(True)
         self.action_mode_box.setChecked(True)
         self.action_mode_box.triggered.connect(
             lambda: self.set_draw_mode("box"))
         toolbar.addAction(self.action_mode_box)
 
-        self.action_mode_poly = QAction("Polygon Mode")
+        self.action_mode_poly = QAction(
+            QIcon(os.path.join(ICO_DIR, 'layer-shape-polygon.png')),
+            "Polygon mode", self)
         self.action_mode_poly.setCheckable(True)
         self.action_mode_poly.triggered.connect(
             lambda: self.set_draw_mode("poly"))
@@ -130,14 +173,58 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        self.action_redo = QAction(
+            QIcon(os.path.join(ICO_DIR, 'eraser--plus.png')),
+            "Redo", self)
+        self.action_redo.triggered.connect(self.overlay.redo)
+        toolbar.addAction(self.action_redo)
+
+        self.action_undo = QAction(
+            QIcon(os.path.join(ICO_DIR, 'eraser--minus.png')),
+            "Undo", self)
+        self.action_undo.triggered.connect(self.overlay.undo)
+        toolbar.addAction(self.action_undo)
+
         # Overlay actions
-        self.action_clear = QAction("Clear Shapes")
+        self.action_clear = QAction(
+            QIcon(os.path.join(ICO_DIR, 'ui-text-field-clear-button.png')),
+            "Clear shapes", self)
         self.action_clear.triggered.connect(self.overlay.clear_shapes)
         toolbar.addAction(self.action_clear)
 
-        self.action_save = QAction("Save COCO")
-        self.action_save.triggered.connect(self.save_coco)
-        toolbar.addAction(self.action_save)
+    def load_settings(self):
+        """Load settings.json from THYRA_DIR. Create this file if missing.
+        class ThyraSettings contains settings of Thyra app"""
+        self.settings = ThyraSettings()
+        pass
+
+    # -----------------------------
+    # Documents
+    # -----------------------------
+    def create_document_dialog(self):
+        """class ThyraDocument contains supported fields of the document.
+        Convention on file names: automatically generated file
+        name has format YYYYmmdd_HHMMSS.json, use current time value.
+        Document is a nested dictionary. Contains relative path to selected
+        image or video relative to THYRA_DIR. Document also contains masks
+        introduced by the user. Masks have relative coordinates in the range [0,
+        1]. When drawing masks relative coordinates must be converted to
+        screen coordinates. Ensure correct screen coordinates in case of
+        image resize at runtime. Always save documents in COCO json format."""
+        self.document = ThyraDocument()
+        pass
+
+    def open_document_dialog(self):
+        """Application must try to open the most recent document at start.
+        The settings.json file must contain a reference to the most recent
+        document"""
+        pass
+
+    def duplicate_document(self):
+        """Save current document and create a new file with a new name and
+        the same content. Convention on file names: automtically generated file
+        name has format YYYYmmdd_HHMMSS.json, use current time value."""
+        pass
 
     # -----------------------------
     # Event filter
@@ -181,8 +268,8 @@ class MainWindow(QMainWindow):
         if not os.path.exists(path):
             self.status.showMessage("File not found", 3000)
             return
-        self.current_file_path = path
-        self.current_file_type = "video"
+        self.document.src_file_path = path
+        self.document.src_file_type = "video"
         self.path_label.setText(path)
         self.video_widget.image = None  # clear previous image
 
@@ -203,8 +290,8 @@ class MainWindow(QMainWindow):
         if not os.path.exists(path):
             self.status.showMessage("File not found", 3000)
             return
-        self.current_file_path = path
-        self.current_file_type = "image"
+        self.document.src_file_path = path
+        self.document.src_file_type = "image"
         self.path_label.setText(path)
         self.mediaplayer.stop()
         self.action_play.setText("Play")
@@ -219,17 +306,19 @@ class MainWindow(QMainWindow):
     # Video controls
     # -----------------------------
     def play_pause(self):
-        if self.current_file_type != "video":
+        if self.document.src_file_type != "video":
             return
         if self.mediaplayer.is_playing():
             self.mediaplayer.pause()
+            self.action_play.setIcon(self.icon_play)
             self.action_play.setText("Play")
         else:
             self.mediaplayer.play()
+            self.action_play.setIcon(self.icon_pause)
             self.action_play.setText("Pause")
 
     def stop(self):
-        if self.current_file_type != "video":
+        if self.document.src_file_type != "video":
             return
         self.mediaplayer.stop()
         self.action_play.setText("Play")
@@ -246,7 +335,7 @@ class MainWindow(QMainWindow):
     # Save COCO
     # -----------------------------
     def save_coco(self):
-        if not self.current_file_path:
+        if not self.document.src_file_path:
             self.status.showMessage("No file open", 3000)
             return
 
@@ -254,13 +343,14 @@ class MainWindow(QMainWindow):
         canvas_h = self.overlay.height()
 
         images = [
-            {"id": 1, "file_name": os.path.basename(self.current_file_path),
+            {"id": 1, "file_name": os.path.basename(
+                self.document.src_file_path),
              "width": canvas_w, "height": canvas_h}]
         annotations = []
         categories = [{"id": 1, "name": "shape", "supercategory": "shape"}]
         ann_id = 1
 
-        for b in self.overlay.boxes:
+        for _, b in self.document.boxes:
             bbox = b.to_coco_bbox()
             area = bbox[2] * bbox[3]
             annotations.append({"id": ann_id, "image_id": 1, "category_id": 1,
@@ -268,7 +358,7 @@ class MainWindow(QMainWindow):
                                 "bbox": bbox, "area": area, "iscrowd": 0})
             ann_id += 1
 
-        for p in self.overlay.polygons:
+        for _, p in self.document.polygons:
             segmentation = p.to_coco_segmentation()
             xs = [pt[0] for pt in p.points]
             ys = [pt[1] for pt in p.points]
@@ -285,12 +375,10 @@ class MainWindow(QMainWindow):
 
         coco = {"images": images, "annotations": annotations,
                 "categories": categories}
-        basename = os.path.splitext(os.path.basename(self.current_file_path))[0]
-        out_path = os.path.join(THYRA_DIR, f"{basename}_shapes_coco.json")
         try:
-            with open(out_path, "w", encoding="utf-8") as f:
+            with open(self.document.src_file_path, "w", encoding="utf-8") as f:
                 json.dump(coco, f, indent=2)
-            self.status.showMessage(f"Saved COCO: {out_path}", 4000)
+            self.status.showMessage(f"Saved COCO: {self.document.src_file_path}", 4000)
         except Exception as e:
             self.status.showMessage(f"Failed to save: {e}", 4000)
 
@@ -319,3 +407,4 @@ class MainWindow(QMainWindow):
                         f"Density count (stub): {msg['count']}")
         except Exception:
             pass
+

@@ -1,8 +1,7 @@
-
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 import sys
 import multiprocessing as mp
-from pathlib import Path
+import os
 
 from app.ui.main_window import MainWindow
 from app.app import ThyraApp

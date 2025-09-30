@@ -1,5 +1,10 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Union
+
 import uuid
 from typing import List, Tuple
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QPointF, QTimer, QRectF
 from PySide6.QtGui import QPainter, QPen, QColor, QPolygonF, QBrush
@@ -7,24 +12,28 @@ from PySide6.QtWidgets import QWidget
 
 from app.ui.vector_masks import BoundingBox, PolygonShape
 
+if TYPE_CHECKING:
+    from app.ui.main_window import MainWindow
+else:
+    MainWindow = Any
+
 PEN_WIDTH = 2
-
 DASH_OFFSET = 0.0
-
 ANIMATION_MSEC = 30
 
 
 class OverlayWidget(QWidget):
     """Transparent overlay for drawing boxes and polygons with improved polygon UX."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+                          False)
         self.setMouseTracking(True)
 
-        self.boxes: List[BoundingBox] = []
-        self.polygons: List[PolygonShape] = []
-
+        self.main_window: MainWindow = None
+        self.action_stack: List[Union[BoundingBox, PolygonShape]] = []
         self.drawing_box = False
         self.box_start = QPointF()
         self.box_current = QPointF()
@@ -58,7 +67,8 @@ class OverlayWidget(QWidget):
                 self.box_current = event.position()
             else:  # polygon
                 self.drawing_poly = True
-                self.current_poly = [(event.position().x(), event.position().y())]
+                self.current_poly = [
+                    (event.position().x(), event.position().y())]
         self.update()
 
     def mouseMoveEvent(self, event):
@@ -66,24 +76,33 @@ class OverlayWidget(QWidget):
             self.box_current = event.position()
         elif self.drawing_poly:
             # append new points as user drags
-            self.current_poly.append((event.position().x(), event.position().y()))
+            self.current_poly.append(
+                (event.position().x(), event.position().y()))
         self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            current_timestamp = int(datetime.now().timestamp())
             if self.drawing_box and self.mode == "box":
                 self.drawing_box = False
                 p1, p2 = self.box_start, self.box_current
                 x, y = min(p1.x(), p2.x()), min(p1.y(), p2.y())
                 w, h = abs(p2.x() - p1.x()), abs(p2.y() - p1.y())
                 if w > 5 and h > 5:
-                    self.boxes.append(BoundingBox(x, y, w, h, str(uuid.uuid4())))
+                    self.main_window.document.boxes.append(
+                        tuple((
+                            current_timestamp,
+                            BoundingBox(x, y, w, h, str(uuid.uuid4()))
+                        )))
             elif self.drawing_poly and self.mode == "poly":
                 # finish polygon on mouse release
                 if len(self.current_poly) >= 3:
-                    self.polygons.append(
-                        PolygonShape(list(self.current_poly), str(uuid.uuid4()))
-                    )
+                    self.main_window.document.polygons.append(
+                        tuple((
+                            current_timestamp,
+                            PolygonShape(list(self.current_poly),
+                                         str(uuid.uuid4()))
+                        )))
                 self.drawing_poly = False
                 self.current_poly = []
         self.update()
@@ -100,9 +119,24 @@ class OverlayWidget(QWidget):
     # -----------------------------
     # Clear shapes
     # -----------------------------
+    def redo(self):
+        """Return to document the shape currently on top of the stack. This
+        is equivalent to redo the most recent action. Pop this action from
+        stack. Update screen"""
+        if self.action_stack:
+            pass
+        self.update()
+
+    def undo(self):
+        """Push to the stack the most recent action from document. Update
+        screen. This is equivalent to undo. Each action in the document
+        contains its timestamp as integer, this is the time, when the shape
+        was added to the document"""
+        self.update()
+
     def clear_shapes(self):
-        self.boxes = []
-        self.polygons = []
+        self.main_window.document.boxes = []
+        self.main_window.document.polygons = []
         self.update()
 
     # -----------------------------
@@ -113,7 +147,7 @@ class OverlayWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Draw existing polygons
-        for poly in self.polygons:
+        for _, poly in self.main_window.document.polygons:
             if len(poly.points) < 3:
                 continue
             qpoints = [QPointF(x, y) for x, y in poly.points]
@@ -125,7 +159,7 @@ class OverlayWidget(QWidget):
             painter.drawPolygon(QPolygonF(qpoints))
 
         # Draw existing bounding boxes
-        for box in self.boxes:
+        for _, box in self.main_window.document.boxes:
             rect = QRectF(box.x, box.y, box.w, box.h)
             pen = QPen(self.box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
@@ -139,7 +173,8 @@ class OverlayWidget(QWidget):
             p1, p2 = self.box_start, self.box_current
             rect = QRectF(min(p1.x(), p2.x()), min(p1.y(), p2.y()),
                           abs(p2.x() - p1.x()), abs(p2.y() - p1.y()))
-            pen = QPen(self.live_box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
+            pen = QPen(self.live_box_color, PEN_WIDTH,
+                       Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
             painter.setPen(pen)
@@ -150,7 +185,8 @@ class OverlayWidget(QWidget):
         if self.drawing_poly and self.current_poly:
             pts = [QPointF(x, y) for x, y in self.current_poly]
             if len(pts) >= PEN_WIDTH:
-                pen = QPen(self.live_box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
+                pen = QPen(self.live_box_color, PEN_WIDTH,
+                           Qt.PenStyle.CustomDashLine)
                 pen.setDashPattern([6.0, 6.0])
                 pen.setDashOffset(self.dash_offset)
                 painter.setPen(pen)

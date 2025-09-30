@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from typing import List, Tuple
+from dataclasses_json import dataclass_json
 
 
+@dataclass_json
 @dataclass
 class BoundingBox:
     x: float
@@ -18,6 +20,7 @@ class BoundingBox:
         return [x, y, x + w, y, x + w, y + h, x, y + h]
 
 
+@dataclass_json
 @dataclass
 class PolygonShape:
     points: List[Tuple[float, float]]
