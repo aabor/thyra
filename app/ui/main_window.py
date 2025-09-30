@@ -12,7 +12,9 @@ Features:
 import sys
 import os
 import json
+from datetime import datetime
 from typing import List, Tuple
+import logging
 
 from PySide6.QtWidgets import (
     QMainWindow, QFileDialog, QToolBar, QLabel,
@@ -24,9 +26,13 @@ from PySide6.QtGui import QAction, QImage, QIcon
 import vlc
 
 from app.ui.overlay_widget import OverlayWidget
+from app.ui.vector_masks import BoundingBox, PolygonShape
 from app.ui.video_widget import VideoWidget
-from configuration import ICO_DIR, THYRA_DIR, THYRA_VIDEO_DIR, THYRA_IMAGE_DIR
+from configuration import ICO_DIR, THYRA_DIR, THYRA_VIDEO_DIR, THYRA_IMAGE_DIR, \
+    LOGGER_NAME
 from thyra_document import ThyraSettings, ThyraDocument
+
+logger = logging.getLogger(LOGGER_NAME)
 
 os.makedirs(THYRA_VIDEO_DIR, exist_ok=True)
 os.makedirs(THYRA_IMAGE_DIR, exist_ok=True)
@@ -35,8 +41,10 @@ os.makedirs(THYRA_IMAGE_DIR, exist_ok=True)
 class MainWindow(QMainWindow):
     def __init__(self, app):
         super().__init__()
+        self.current_document_file_path = ""
         self.document: ThyraDocument = ThyraDocument()
         self.settings: ThyraSettings = ThyraSettings()
+        self.setWindowIcon(QIcon(os.path.join(ICO_DIR, "favicon.icns")))
         self.icon_pause = self.style().standardIcon(
             QStyle.StandardPixmap.SP_MediaPause)
         self.icon_play = self.style().standardIcon(
@@ -44,8 +52,6 @@ class MainWindow(QMainWindow):
         self.app = app
         self.setWindowTitle("PySide6 + OpenGL Video/Image + Overlay")
         self.showMaximized()
-
-        self.load_settings()
 
         # VLC
         self.vlc_instance = vlc.Instance("--vout=gl")
@@ -86,6 +92,7 @@ class MainWindow(QMainWindow):
         # VLC output attach
         self._attach_vlc_output()
 
+        self.load_settings()
         # poll worker responses
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(50)
@@ -117,13 +124,20 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.action_duplicate_document)
         self.action_duplicate_document.triggered.connect(
             self.duplicate_document)
+        # Save document
+        self.action_save_document = QAction(
+            QIcon(os.path.join(ICO_DIR, 'disk-return-black.png')),
+            "Save", self)
+        toolbar.addAction(self.action_save_document)
+        self.action_save_document.triggered.connect(
+            self.save_document)
         # Export document to COCO JSON
         self.action_export_document = QAction(
             QIcon(os.path.join(ICO_DIR, 'document-export.png')),
             "Export COCO", self)
         toolbar.addAction(self.action_export_document)
         self.action_export_document.triggered.connect(
-            self.save_coco)
+            self.export_to_coco)
 
         # Open video
         self.action_open_video = QAction(
@@ -196,35 +210,333 @@ class MainWindow(QMainWindow):
         """Load settings.json from THYRA_DIR. Create this file if missing.
         class ThyraSettings contains settings of Thyra app"""
         self.settings = ThyraSettings()
-        pass
+        settings_path = os.path.join(THYRA_DIR, "settings.json")
+        try:
+            if os.path.exists(settings_path):
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # defensive: only set fields we know about
+                if isinstance(data,
+                              dict) and "most_recent_document_path" in data:
+                    self.settings = ThyraSettings(
+                        most_recent_document_path=data.get(
+                            "most_recent_document_path", "")
+                    )
+                # attempt to open most recent document if exists
+                mr = getattr(self.settings, "most_recent_document_path", "")
+                if mr:
+                    mr_abs = mr if os.path.isabs(mr) else os.path.join(
+                        THYRA_DIR, mr)
+                    if os.path.exists(mr_abs):
+                        # try to open silently (don't show dialog)
+                        self.load_document(mr_abs)
+                        self.current_document_file_path = mr_abs
+            else:
+                # create default settings file
+                with open(settings_path, "w", encoding="utf-8") as f:
+                    json.dump(self.settings.__dict__, f, indent=2)
+        except Exception as e:
+            # don't crash the app for settings load errors
+            logger.error(f"load_settings error: {e}")
 
-    # -----------------------------
-    # Documents
-    # -----------------------------
+    def _save_settings(self):
+        try:
+            settings_path = os.path.join(THYRA_DIR, "settings.json")
+            with open(settings_path, "w", encoding="utf-8") as f:
+                json.dump(self.settings.__dict__, f, indent=2)
+        except Exception as e:
+            logger.error(f"save_settings error: {e}")
+
     def create_document_dialog(self):
-        """class ThyraDocument contains supported fields of the document.
-        Convention on file names: automatically generated file
-        name has format YYYYmmdd_HHMMSS.json, use current time value.
-        Document is a nested dictionary. Contains relative path to selected
-        image or video relative to THYRA_DIR. Document also contains masks
-        introduced by the user. Masks have relative coordinates in the range [0,
-        1]. When drawing masks relative coordinates must be converted to
-        screen coordinates. Ensure correct screen coordinates in case of
-        image resize at runtime. Always save documents in COCO json format."""
-        self.document = ThyraDocument()
-        pass
+        """Create a new ThyraDocument and save it under THYRA_DIR. The user
+        chooses an image or video file which will be referenced relatively
+        inside the new document. The created document is saved as
+        YYYYmmdd_HHMMSS.json inside THYRA_DIR and the settings are updated."""
+        # Ask user to pick an image or video (both filters available)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose source image or video", THYRA_DIR,
+            "Image or Video files (*.png *.jpg *.jpeg *.bmp *.tiff *.gif *.mov *.mp4 *.mkv *.avi *.webm);;All files (*)"
+        )
+        if not path:
+            return
+
+        # determine src_file_type from extension
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".mov", ".mp4", ".mkv", ".avi", ".webm"):
+            src_type = "video"
+        else:
+            src_type = "image"
+
+        # create document (store relative path where possible)
+        rel_path = os.path.relpath(path, THYRA_DIR) if os.path.commonpath(
+            [THYRA_DIR, path]) == THYRA_DIR else path
+        self.document = ThyraDocument(src_file_path=rel_path,
+                                      src_file_type=src_type,
+                                      boxes=[], polygons=[])
+        # save document to file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"{timestamp}.json"
+        out_path = os.path.join(THYRA_DIR, fname)
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                # dataclasses_json provides to_json but keep simple JSON structure
+                json.dump({
+                    "src_file_path": self.document.src_file_path,
+                    "src_file_type": self.document.src_file_type,
+                    "boxes": [], "polygons": []
+                }, f, indent=2)
+            # update settings and remember current document file path
+            self.settings.most_recent_document_path = os.path.relpath(
+                out_path, THYRA_DIR)
+            self.current_document_file_path = out_path
+            self._save_settings()
+            self.status.showMessage(f"Created document: {out_path}", 4000)
+            # open associated media immediately
+            if src_type == "image":
+                self.open_image(path)
+            else:
+                self.open_video(path)
+        except Exception as e:
+            msg = f"Failed to create document: {e}"
+            self.status.showMessage(msg, 4000)
+            logger.error(msg)
 
     def open_document_dialog(self):
-        """Application must try to open the most recent document at start.
-        The settings.json file must contain a reference to the most recent
-        document"""
-        pass
+        """Open a Thyra JSON document from disk (file dialog). Loaded shapes
+        are converted from relative coordinates (if present) into absolute
+        coordinates for the current canvas size so overlay can draw them."""
+        path, _ = QFileDialog.getOpenFileName(self, "Open document", THYRA_DIR,
+                                              "JSON document (*.json);;All files (*)")
+        if not path:
+            return
+        self.load_document(path)
+        # save this as most recent
+        try:
+            rel = os.path.relpath(path, THYRA_DIR)
+        except Exception:
+            rel = path
+        self.settings.most_recent_document_path = rel
+        self._save_settings()
+
+    def load_document(self, path: str):
+        """Open a saved document and populate self.document with denormalized shapes."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            msg = f"Failed to open document: {e}"
+            self.status.showMessage(msg, 4000)
+            logger.error(msg)
+            return
+
+        doc = ThyraDocument()
+        doc.src_file_path = data.get("src_file_path", "")
+        doc.src_file_type = data.get("src_file_type", "")
+
+        # current overlay size
+        canvas_w = max(1, self.overlay.width())
+        canvas_h = max(1, self.overlay.height())
+
+        # parse boxes
+        doc.boxes = []
+        for entry in data.get("boxes", []):
+            try:
+                ts = int(entry.get("ts", datetime.now().timestamp()))
+                box_obj = BoundingBox.denormalized(entry, canvas_w, canvas_h)
+                doc.boxes.append((ts, box_obj))
+            except Exception:
+                continue
+
+        # parse polygons
+        doc.polygons = []
+        for entry in data.get("polygons", []):
+            try:
+                ts = int(entry.get("ts", datetime.now().timestamp()))
+                poly_obj = PolygonShape.denormalized(entry, canvas_w, canvas_h)
+                doc.polygons.append((ts, poly_obj))
+            except Exception as e:
+                logger.error(f"Parsing polygons: {e}")
+                continue
+
+        self.document = doc
+        self.current_document_file_path = path
+
+        # try to open associated media file
+        src = doc.src_file_path
+        if src:
+            full_src = src if os.path.isabs(src) else os.path.join(
+                THYRA_DIR, src)
+            if os.path.exists(full_src):
+                if doc.src_file_type == "image":
+                    self.open_image(full_src)
+                elif doc.src_file_type == "video":
+                    self.open_video(full_src)
+                else:
+                    ext = os.path.splitext(full_src)[1].lower()
+                    if ext in (".mov", ".mp4", ".mkv", ".avi", ".webm"):
+                        self.open_video(full_src)
+                    else:
+                        self.open_image(full_src)
+
+        self.overlay.update()
+        msg = f"Opened document {path}"
+        self.status.showMessage(msg, 3000)
+        logger.info(msg)
+
+    def save_document(self):
+        """Save current document with normalized coordinates."""
+        if not self.current_document_file_path:
+            msg = "No file open"
+            self.status.showMessage(msg, 3000)
+            logger.error(msg)
+            return
+
+        canvas_w = self.overlay.width()
+        canvas_h = self.overlay.height()
+        if canvas_w == 0 or canvas_h == 0:
+            msg = "Canvas size invalid"
+            self.status.showMessage(msg, 3000)
+            logger.error(msg)
+            return
+
+        data = {
+            "src_file_path": self.document.src_file_path,
+            "src_file_type": self.document.src_file_type,
+            "image": {
+                "file_name": os.path.basename(self.document.src_file_path),
+                "width": canvas_w,
+                "height": canvas_h,
+            },
+            "boxes": [],
+            "polygons": [],
+        }
+
+        # normalized boxes
+        for ts, b in self.document.boxes:
+            entry = b.normalized(canvas_w, canvas_h)
+            entry["ts"] = ts
+            data["boxes"].append(entry)
+
+        # normalized polygons
+        for ts, p in self.document.polygons:
+            entry = p.normalized(canvas_w, canvas_h)
+            entry["ts"] = ts
+            data["polygons"].append(entry)
+        try:
+            with open(self.current_document_file_path, "w",
+                      encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            msg = f"Saved: {self.current_document_file_path}"
+            self.status.showMessage(msg, 4000)
+            logger.info(msg)
+        except Exception as e:
+            msg = f"Failed to save: {e}"
+            self.status.showMessage(msg, 4000)
+            logger.error(msg)
 
     def duplicate_document(self):
         """Save current document and create a new file with a new name and
-        the same content. Convention on file names: automtically generated file
-        name has format YYYYmmdd_HHMMSS.json, use current time value."""
-        pass
+        the same content. Convention: YYYYmmdd_HHMMSS.json"""
+        if not self.current_document_file_path:
+            return
+        try:
+            with open(self.current_document_file_path, "r",
+                      encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            msg = f"Failed to read current document: {e}"
+            self.status.showMessage(msg, 3000)
+            logger.error(msg)
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        new_name = f"{timestamp}.json"
+        out_path = os.path.join(THYRA_DIR, new_name)
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            self.current_document_file_path = out_path
+            self.settings.most_recent_document_path = os.path.relpath(
+                out_path, THYRA_DIR)
+            self._save_settings()
+            msg = f"Duplicated document → {out_path}"
+            self.status.showMessage(msg, 4000)
+            logger.info(msg)
+        except Exception as e:
+            msg = f"Failed to duplicate document: {e}"
+            self.status.showMessage(msg, 4000)
+            logger.error(msg)
+
+    # -----------------------------
+    # Export to COCO JSON
+    # -----------------------------
+    def export_to_coco(self):
+        if not self.current_document_file_path:
+            msg = "No file opened"
+            self.status.showMessage(msg, 3000)
+            logger.error(msg)
+            return
+
+        canvas_w = self.overlay.width()
+        canvas_h = self.overlay.height()
+        images = [
+            {"id": 1,
+             "file_name": self.document.src_file_path,
+             "width": canvas_w, "height": canvas_h}
+        ]
+        annotations = []
+        categories = [{"id": 1, "name": "shape", "supercategory": "shape"}]
+        ann_id = 1
+
+        # Boxes
+        for _, b in self.document.boxes:
+            bbox = b.to_coco_bbox()
+            area = bbox[2] * bbox[3]
+            annotations.append({
+                "id": ann_id, "image_id": 1, "category_id": 1,
+                "segmentation": [b.to_polygon()],
+                "bbox": bbox, "area": area, "iscrowd": 0
+            })
+            ann_id += 1
+
+        # Polygons
+        for _, p in self.document.polygons:
+            segmentation = p.to_coco_segmentation()
+            xs = [pt[0] for pt in p.points]
+            ys = [pt[1] for pt in p.points]
+            if not xs or not ys:
+                continue
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+            bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
+            area = abs(self._polygon_area(p.points))
+            annotations.append({
+                "id": ann_id, "image_id": 1, "category_id": 1,
+                "segmentation": segmentation, "bbox": bbox,
+                "area": area, "iscrowd": 0
+            })
+            ann_id += 1
+
+        coco = {
+            "images": images,
+            "annotations": annotations,
+            "categories": categories
+        }
+
+        # Add _COCO suffix
+        base, ext = os.path.splitext(self.current_document_file_path)
+        out_file_path = f"{base}_COCO.json"
+
+        try:
+            with open(out_file_path, "w", encoding="utf-8") as f:
+                json.dump(coco, f, indent=2)
+            msg = f"Saved COCO JSON: {out_file_path}"
+            self.status.showMessage(msg, 4000)
+            logger.info(msg)
+        except Exception as e:
+            msg = f"Failed to save: {e}"
+            self.status.showMessage(msg, 4000)
+            logger.error(msg)
 
     # -----------------------------
     # Event filter
@@ -242,31 +554,35 @@ class MainWindow(QMainWindow):
             try:
                 self.mediaplayer.set_nsobject(int(self.video_widget.winId()))
             except Exception as e:
-                print("set_nsobject failed:", e)
+                logger.error(f"set_nsobject failed: {e}")
         elif sys.platform.startswith("win"):
             try:
                 self.mediaplayer.set_hwnd(int(self.video_widget.winId()))
             except Exception as e:
-                print("set_hwnd failed:", e)
+                logger.error(f"set_hwnd failed: {e}")
         else:
             try:
                 self.mediaplayer.set_xwindow(int(self.video_widget.winId()))
             except Exception as e:
-                print("set_xwindow failed:", e)
+                logger.error(f"set_xwindow failed: {e}")
 
     # -----------------------------
     # Open video/image
     # -----------------------------
     def open_video_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open video",
-                                              THYRA_VIDEO_DIR,
-                                              "Video files (*.mov *.mp4 *.mkv *.avi *.webm);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open video",
+            THYRA_VIDEO_DIR,
+            "Video files (*.mov *.mp4 *.mkv *.avi *.webm);;All files (*)"
+        )
         if path:
             self.open_video(path)
 
     def open_video(self, path: str):
         if not os.path.exists(path):
-            self.status.showMessage("File not found", 3000)
+            msg = f"File not found {path}"
+            self.status.showMessage(msg, 3000)
+            logger.error(msg)
             return
         self.document.src_file_path = path
         self.document.src_file_type = "video"
@@ -280,15 +596,19 @@ class MainWindow(QMainWindow):
         self.mediaplayer.play()
 
     def open_image_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open image",
-                                              THYRA_IMAGE_DIR,
-                                              "Image files (*.png *.jpg *.jpeg *.bmp *.tiff *.gif);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open image",
+            THYRA_IMAGE_DIR,
+            "Image files (*.png *.jpg *.jpeg *.bmp *.tiff *.gif);;All files (*)"
+        )
         if path:
             self.open_image(path)
 
     def open_image(self, path: str):
         if not os.path.exists(path):
-            self.status.showMessage("File not found", 3000)
+            msg = f"File not found {path}"
+            self.status.showMessage(msg, 3000)
+            logger.error(msg)
             return
         self.document.src_file_path = path
         self.document.src_file_type = "image"
@@ -297,7 +617,9 @@ class MainWindow(QMainWindow):
         self.action_play.setText("Play")
         img = QImage(path)
         if img.isNull():
-            self.status.showMessage("Failed to load image", 3000)
+            msg = f"Failed to load image {path}"
+            self.status.showMessage(msg, 3000)
+            logger.error(msg)
             return
         self.video_widget.image = img
         self.video_widget.update()
@@ -331,57 +653,6 @@ class MainWindow(QMainWindow):
         self.action_mode_box.setChecked(mode == "box")
         self.action_mode_poly.setChecked(mode == "poly")
 
-    # -----------------------------
-    # Save COCO
-    # -----------------------------
-    def save_coco(self):
-        if not self.document.src_file_path:
-            self.status.showMessage("No file open", 3000)
-            return
-
-        canvas_w = self.overlay.width()
-        canvas_h = self.overlay.height()
-
-        images = [
-            {"id": 1, "file_name": os.path.basename(
-                self.document.src_file_path),
-             "width": canvas_w, "height": canvas_h}]
-        annotations = []
-        categories = [{"id": 1, "name": "shape", "supercategory": "shape"}]
-        ann_id = 1
-
-        for _, b in self.document.boxes:
-            bbox = b.to_coco_bbox()
-            area = bbox[2] * bbox[3]
-            annotations.append({"id": ann_id, "image_id": 1, "category_id": 1,
-                                "segmentation": [b.to_polygon()],
-                                "bbox": bbox, "area": area, "iscrowd": 0})
-            ann_id += 1
-
-        for _, p in self.document.polygons:
-            segmentation = p.to_coco_segmentation()
-            xs = [pt[0] for pt in p.points]
-            ys = [pt[1] for pt in p.points]
-            if not xs or not ys:
-                continue
-            x_min, x_max = min(xs), max(xs)
-            y_min, y_max = min(ys), max(ys)
-            bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
-            area = abs(self._polygon_area(p.points))
-            annotations.append({"id": ann_id, "image_id": 1, "category_id": 1,
-                                "segmentation": segmentation, "bbox": bbox,
-                                "area": area, "iscrowd": 0})
-            ann_id += 1
-
-        coco = {"images": images, "annotations": annotations,
-                "categories": categories}
-        try:
-            with open(self.document.src_file_path, "w", encoding="utf-8") as f:
-                json.dump(coco, f, indent=2)
-            self.status.showMessage(f"Saved COCO: {self.document.src_file_path}", 4000)
-        except Exception as e:
-            self.status.showMessage(f"Failed to save: {e}", 4000)
-
     @staticmethod
     def _polygon_area(points: List[Tuple[float, float]]) -> float:
         n = len(points)
@@ -401,10 +672,13 @@ class MainWindow(QMainWindow):
                 # handle segment stub
                 if msg.get('mask') is not None:
                     # self.canvas.apply_mask(msg['mask'])
-                    self.status.showMessage('Mask received (stub)')
+                    log_msg = 'Mask received (stub)'
+                    logger.info(log_msg)
+                    self.status.showMessage(log_msg)
                 if msg.get('count') is not None:
-                    self.status.showMessage(
-                        f"Density count (stub): {msg['count']}")
-        except Exception:
+                    log_msg = f"Density count (stub): {msg['count']}"
+                    self.status.showMessage(log_msg)
+                    logger.info(log_msg)
+        except Exception as e:
+            logger.error(f"Poll workers: {e}")
             pass
-

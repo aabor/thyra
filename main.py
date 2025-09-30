@@ -2,9 +2,21 @@
 import sys
 import multiprocessing as mp
 import os
+import logging
+from logging.handlers import RotatingFileHandler
 
 from app.ui.main_window import MainWindow
 from app.app import ThyraApp
+from configuration import LOGGER_NAME, THYRA_LOG_PATH
+
+logger = logging.getLogger(LOGGER_NAME)
+logger.setLevel(logging.DEBUG)
+handler = RotatingFileHandler(THYRA_LOG_PATH, maxBytes=1_000_000, backupCount=5)
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+logger.info("Application started")
 
 
 def main():

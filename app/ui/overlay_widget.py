@@ -123,8 +123,27 @@ class OverlayWidget(QWidget):
         """Return to document the shape currently on top of the stack. This
         is equivalent to redo the most recent action. Pop this action from
         stack. Update screen"""
-        if self.action_stack:
-            pass
+        if not self.action_stack:
+            return
+        item = self.action_stack.pop()  # this should be a tuple(timestamp, shape) or shape
+        # detect type and append to corresponding document list
+        try:
+            # item might be (ts, BoundingBox) or (ts, PolygonShape)
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                ts, shape = item
+            else:
+                # no timestamp: create one
+                ts = int(datetime.now().timestamp())
+                shape = item
+            if isinstance(shape, BoundingBox):
+                self.main_window.document.boxes.append((ts, shape))
+            elif isinstance(shape, PolygonShape):
+                self.main_window.document.polygons.append((ts, shape))
+            else:
+                # unknown type: ignore
+                return
+        except Exception:
+            return
         self.update()
 
     def undo(self):
@@ -132,6 +151,49 @@ class OverlayWidget(QWidget):
         screen. This is equivalent to undo. Each action in the document
         contains its timestamp as integer, this is the time, when the shape
         was added to the document"""
+        # find the most recent item among boxes and polygons by timestamp
+        latest_ts = -1
+        latest_kind = None  # 'box' or 'poly'
+        latest_index = None
+
+        # find latest box
+        for idx, entry in enumerate(self.main_window.document.boxes):
+            try:
+                ts = entry[0] if isinstance(entry, (list, tuple)) else None
+                if ts is None:
+                    # try to fallback: check shape id/time
+                    ts = int(datetime.now().timestamp())
+                if ts > latest_ts:
+                    latest_ts = ts
+                    latest_kind = "box"
+                    latest_index = idx
+            except Exception:
+                continue
+
+        # find latest polygon
+        for idx, entry in enumerate(self.main_window.document.polygons):
+            try:
+                ts = entry[0] if isinstance(entry, (list, tuple)) else None
+                if ts is None:
+                    ts = int(datetime.now().timestamp())
+                if ts > latest_ts:
+                    latest_ts = ts
+                    latest_kind = "poly"
+                    latest_index = idx
+            except Exception:
+                continue
+
+        if latest_kind is None:
+            # nothing to undo
+            return
+
+        if latest_kind == "box":
+            item = self.main_window.document.boxes.pop(latest_index)
+            self.action_stack.append(item)
+        else:
+            item = self.main_window.document.polygons.pop(latest_index)
+            self.action_stack.append(item)
+
         self.update()
 
     def clear_shapes(self):
