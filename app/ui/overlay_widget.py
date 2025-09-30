@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Union
-
 import uuid
 from typing import List, Tuple
 from datetime import datetime
+import logging
 
 from PySide6.QtCore import Qt, QPointF, QTimer, QRectF
 from PySide6.QtGui import QPainter, QPen, QColor, QPolygonF, QBrush
@@ -17,23 +17,25 @@ if TYPE_CHECKING:
 else:
     MainWindow = Any
 
+logger = logging.getLogger(__name__)
+
 PEN_WIDTH = 2
 DASH_OFFSET = 0.0
 ANIMATION_MSEC = 30
 
 
 class OverlayWidget(QWidget):
-    """Transparent overlay for drawing boxes and polygons with improved polygon UX."""
+    """Overlay for drawing boxes/polygons using normalized image coordinates."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,
-                          False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setMouseTracking(True)
 
         self.main_window: MainWindow = None
         self.action_stack: List[Union[BoundingBox, PolygonShape]] = []
+
         self.drawing_box = False
         self.box_start = QPointF()
         self.box_current = QPointF()
@@ -57,6 +59,19 @@ class OverlayWidget(QWidget):
         self.mode = mode
 
     # -----------------------------
+    # Coordinate mapping
+    # -----------------------------
+    def widget_to_image_coords(self, pos: QPointF) -> Tuple[float, float]:
+        """Map widget coordinates to image coordinates (taking scaling into account)."""
+        img_w, img_h = self.main_window.image_width, self.main_window.image_height
+        canvas_w, canvas_h = self.width(), self.height()
+        scale_x = img_w / canvas_w
+        scale_y = img_h / canvas_h
+        x_img = pos.x() * scale_x
+        y_img = pos.y() * scale_y
+        return x_img, y_img
+
+    # -----------------------------
     # Mouse events
     # -----------------------------
     def mousePressEvent(self, event):
@@ -67,48 +82,53 @@ class OverlayWidget(QWidget):
                 self.box_current = event.position()
             else:  # polygon
                 self.drawing_poly = True
-                self.current_poly = [
-                    (event.position().x(), event.position().y())]
+                self.current_poly = [(event.position().x(), event.position().y())]
         self.update()
 
     def mouseMoveEvent(self, event):
         if self.drawing_box:
             self.box_current = event.position()
         elif self.drawing_poly:
-            # append new points as user drags
-            self.current_poly.append(
-                (event.position().x(), event.position().y()))
+            self.current_poly.append((event.position().x(), event.position().y()))
         self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            current_timestamp = int(datetime.now().timestamp())
+            ts = int(datetime.now().timestamp())
+            image_w, image_h = self.main_window.image_width, self.main_window.image_height
+
             if self.drawing_box and self.mode == "box":
                 self.drawing_box = False
-                p1, p2 = self.box_start, self.box_current
-                x, y = min(p1.x(), p2.x()), min(p1.y(), p2.y())
-                w, h = abs(p2.x() - p1.x()), abs(p2.y() - p1.y())
+                p1_img = self.widget_to_image_coords(self.box_start)
+                p2_img = self.widget_to_image_coords(self.box_current)
+                x, y = min(p1_img[0], p2_img[0]), min(p1_img[1], p2_img[1])
+                w, h = abs(p2_img[0] - p1_img[0]), abs(p2_img[1] - p1_img[1])
                 if w > 5 and h > 5:
-                    self.main_window.document.boxes.append(
-                        tuple((
-                            current_timestamp,
-                            BoundingBox(x, y, w, h, str(uuid.uuid4()))
-                        )))
+                    # convert to normalized image coordinates
+                    norm_box = BoundingBox(
+                        x=x / image_w,
+                        y=y / image_h,
+                        w=w / image_w,
+                        h=h / image_h,
+                        id=str(uuid.uuid4())
+                    )
+                    self.main_window.document.boxes.append((ts, norm_box))
+
             elif self.drawing_poly and self.mode == "poly":
-                # finish polygon on mouse release
                 if len(self.current_poly) >= 3:
-                    self.main_window.document.polygons.append(
-                        tuple((
-                            current_timestamp,
-                            PolygonShape(list(self.current_poly),
-                                         str(uuid.uuid4()))
-                        )))
+                    norm_points = []
+                    for pt in self.current_poly:
+                        x_img, y_img = self.widget_to_image_coords(QPointF(pt[0], pt[1]))
+                        norm_points.append((x_img / image_w, y_img / image_h))
+                    norm_poly = PolygonShape(points=norm_points, id=str(uuid.uuid4()))
+                    self.main_window.document.polygons.append((ts, norm_poly))
                 self.drawing_poly = False
                 self.current_poly = []
+
         self.update()
 
     # -----------------------------
-    # Animation timer
+    # Animation
     # -----------------------------
     def _on_anim_tick(self):
         self.dash_offset -= 1.5
@@ -117,83 +137,45 @@ class OverlayWidget(QWidget):
         self.update()
 
     # -----------------------------
-    # Clear shapes
+    # Undo / Redo / Clear
     # -----------------------------
-    def redo(self):
-        """Return to document the shape currently on top of the stack. This
-        is equivalent to redo the most recent action. Pop this action from
-        stack. Update screen"""
-        if not self.action_stack:
-            return
-        item = self.action_stack.pop()  # this should be a tuple(timestamp, shape) or shape
-        # detect type and append to corresponding document list
-        try:
-            # item might be (ts, BoundingBox) or (ts, PolygonShape)
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                ts, shape = item
-            else:
-                # no timestamp: create one
-                ts = int(datetime.now().timestamp())
-                shape = item
-            if isinstance(shape, BoundingBox):
-                self.main_window.document.boxes.append((ts, shape))
-            elif isinstance(shape, PolygonShape):
-                self.main_window.document.polygons.append((ts, shape))
-            else:
-                # unknown type: ignore
-                return
-        except Exception:
-            return
-        self.update()
-
     def undo(self):
-        """Push to the stack the most recent action from document. Update
-        screen. This is equivalent to undo. Each action in the document
-        contains its timestamp as integer, this is the time, when the shape
-        was added to the document"""
-        # find the most recent item among boxes and polygons by timestamp
         latest_ts = -1
-        latest_kind = None  # 'box' or 'poly'
+        latest_kind = None
         latest_index = None
 
-        # find latest box
         for idx, entry in enumerate(self.main_window.document.boxes):
-            try:
-                ts = entry[0] if isinstance(entry, (list, tuple)) else None
-                if ts is None:
-                    # try to fallback: check shape id/time
-                    ts = int(datetime.now().timestamp())
-                if ts > latest_ts:
-                    latest_ts = ts
-                    latest_kind = "box"
-                    latest_index = idx
-            except Exception:
-                continue
-
-        # find latest polygon
+            ts = entry[0]
+            if ts > latest_ts:
+                latest_ts = ts
+                latest_kind = "box"
+                latest_index = idx
         for idx, entry in enumerate(self.main_window.document.polygons):
-            try:
-                ts = entry[0] if isinstance(entry, (list, tuple)) else None
-                if ts is None:
-                    ts = int(datetime.now().timestamp())
-                if ts > latest_ts:
-                    latest_ts = ts
-                    latest_kind = "poly"
-                    latest_index = idx
-            except Exception:
-                continue
+            ts = entry[0]
+            if ts > latest_ts:
+                latest_ts = ts
+                latest_kind = "poly"
+                latest_index = idx
 
         if latest_kind is None:
-            # nothing to undo
             return
 
         if latest_kind == "box":
             item = self.main_window.document.boxes.pop(latest_index)
-            self.action_stack.append(item)
         else:
             item = self.main_window.document.polygons.pop(latest_index)
-            self.action_stack.append(item)
+        self.action_stack.append(item)
+        self.update()
 
+    def redo(self):
+        if not self.action_stack:
+            return
+        item = self.action_stack.pop()
+        ts, shape = item
+        if isinstance(shape, BoundingBox):
+            self.main_window.document.boxes.append((ts, shape))
+        elif isinstance(shape, PolygonShape):
+            self.main_window.document.polygons.append((ts, shape))
         self.update()
 
     def clear_shapes(self):
@@ -207,22 +189,17 @@ class OverlayWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        canvas_w = self.width()
+        canvas_h = self.height()
+        img_w = self.main_window.image_width
+        img_h = self.main_window.image_height
+        scale_x = canvas_w / img_w
+        scale_y = canvas_h / img_h
 
-        # Draw existing polygons
-        for _, poly in self.main_window.document.polygons:
-            if len(poly.points) < 3:
-                continue
-            qpoints = [QPointF(x, y) for x, y in poly.points]
-            pen = QPen(self.box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
-            pen.setDashPattern([6.0, 6.0])
-            pen.setDashOffset(self.dash_offset)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPolygon(QPolygonF(qpoints))
-
-        # Draw existing bounding boxes
+        # draw boxes
         for _, box in self.main_window.document.boxes:
-            rect = QRectF(box.x, box.y, box.w, box.h)
+            rect = QRectF(box.x * img_w * scale_x, box.y * img_h * scale_y,
+                          box.w * img_w * scale_x, box.h * img_h * scale_y)
             pen = QPen(self.box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
@@ -230,31 +207,44 @@ class OverlayWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
 
-        # Live box preview
+        # draw polygons
+        for _, poly in self.main_window.document.polygons:
+            pts = [QPointF(x * img_w * scale_x, y * img_h * scale_y) for x, y in poly.points]
+            if len(pts) >= 3:
+                pen = QPen(self.box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
+                pen.setDashPattern([6.0, 6.0])
+                pen.setDashOffset(self.dash_offset)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPolygon(QPolygonF(pts))
+            # feedback points
+            for p in pts:
+                painter.setBrush(QBrush(self.feedback_point_color))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(p, 3, 3)
+
+        # live box preview
         if self.drawing_box and self.mode == "box":
             p1, p2 = self.box_start, self.box_current
             rect = QRectF(min(p1.x(), p2.x()), min(p1.y(), p2.y()),
                           abs(p2.x() - p1.x()), abs(p2.y() - p1.y()))
-            pen = QPen(self.live_box_color, PEN_WIDTH,
-                       Qt.PenStyle.CustomDashLine)
+            pen = QPen(self.live_box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
 
-        # Live polygon preview
+        # live polygon preview
         if self.drawing_poly and self.current_poly:
             pts = [QPointF(x, y) for x, y in self.current_poly]
             if len(pts) >= PEN_WIDTH:
-                pen = QPen(self.live_box_color, PEN_WIDTH,
-                           Qt.PenStyle.CustomDashLine)
+                pen = QPen(self.live_box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
                 pen.setDashPattern([6.0, 6.0])
                 pen.setDashOffset(self.dash_offset)
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawPolyline(QPolygonF(pts))
-            # draw small feedback points
             for p in pts:
                 painter.setBrush(QBrush(self.feedback_point_color))
                 painter.setPen(Qt.PenStyle.NoPen)

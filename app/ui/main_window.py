@@ -41,6 +41,8 @@ os.makedirs(THYRA_IMAGE_DIR, exist_ok=True)
 class MainWindow(QMainWindow):
     def __init__(self, app):
         super().__init__()
+        self.image_height = None
+        self.image_width = None
         self.current_document_file_path = ""
         self.document: ThyraDocument = ThyraDocument()
         self.settings: ThyraSettings = ThyraSettings()
@@ -319,7 +321,7 @@ class MainWindow(QMainWindow):
         self._save_settings()
 
     def load_document(self, path: str):
-        """Open a saved document and populate self.document with denormalized shapes."""
+        """Load a saved document with normalized coordinates."""
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -333,26 +335,32 @@ class MainWindow(QMainWindow):
         doc.src_file_path = data.get("src_file_path", "")
         doc.src_file_type = data.get("src_file_type", "")
 
-        # current overlay size
-        canvas_w = max(1, self.overlay.width())
-        canvas_h = max(1, self.overlay.height())
-
-        # parse boxes
+        # parse boxes (already normalized)
         doc.boxes = []
         for entry in data.get("boxes", []):
             try:
                 ts = int(entry.get("ts", datetime.now().timestamp()))
-                box_obj = BoundingBox.denormalized(entry, canvas_w, canvas_h)
+                box_obj = BoundingBox(
+                    x=entry["x"],
+                    y=entry["y"],
+                    w=entry["w"],
+                    h=entry["h"],
+                    id=entry["id"]
+                )
                 doc.boxes.append((ts, box_obj))
-            except Exception:
+            except Exception as e:
+                logger.error(f"Parsing boxes: {e}")
                 continue
 
-        # parse polygons
+        # parse polygons (already normalized)
         doc.polygons = []
         for entry in data.get("polygons", []):
             try:
                 ts = int(entry.get("ts", datetime.now().timestamp()))
-                poly_obj = PolygonShape.denormalized(entry, canvas_w, canvas_h)
+                poly_obj = PolygonShape(
+                    points=entry["points"],
+                    id=entry["id"]
+                )
                 doc.polygons.append((ts, poly_obj))
             except Exception as e:
                 logger.error(f"Parsing polygons: {e}")
@@ -364,8 +372,8 @@ class MainWindow(QMainWindow):
         # try to open associated media file
         src = doc.src_file_path
         if src:
-            full_src = src if os.path.isabs(src) else os.path.join(
-                THYRA_DIR, src)
+            full_src = src if os.path.isabs(src) else os.path.join(THYRA_DIR,
+                                                                   src)
             if os.path.exists(full_src):
                 if doc.src_file_type == "image":
                     self.open_image(full_src)
@@ -384,17 +392,9 @@ class MainWindow(QMainWindow):
         logger.info(msg)
 
     def save_document(self):
-        """Save current document with normalized coordinates."""
+        """Save current document. Coordinates are already normalized to image size."""
         if not self.current_document_file_path:
             msg = "No file open"
-            self.status.showMessage(msg, 3000)
-            logger.error(msg)
-            return
-
-        canvas_w = self.overlay.width()
-        canvas_h = self.overlay.height()
-        if canvas_w == 0 or canvas_h == 0:
-            msg = "Canvas size invalid"
             self.status.showMessage(msg, 3000)
             logger.error(msg)
             return
@@ -404,24 +404,32 @@ class MainWindow(QMainWindow):
             "src_file_type": self.document.src_file_type,
             "image": {
                 "file_name": os.path.basename(self.document.src_file_path),
-                "width": canvas_w,
-                "height": canvas_h,
             },
             "boxes": [],
             "polygons": [],
         }
 
-        # normalized boxes
+        # boxes (already normalized)
         for ts, b in self.document.boxes:
-            entry = b.normalized(canvas_w, canvas_h)
-            entry["ts"] = ts
+            entry = {
+                "id": b.id,
+                "x": b.x,
+                "y": b.y,
+                "w": b.w,
+                "h": b.h,
+                "ts": ts,
+            }
             data["boxes"].append(entry)
 
-        # normalized polygons
+        # polygons (already normalized)
         for ts, p in self.document.polygons:
-            entry = p.normalized(canvas_w, canvas_h)
-            entry["ts"] = ts
+            entry = {
+                "id": p.id,
+                "points": p.points,
+                "ts": ts,
+            }
             data["polygons"].append(entry)
+
         try:
             with open(self.current_document_file_path, "w",
                       encoding="utf-8") as f:
@@ -584,6 +592,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage(msg, 3000)
             logger.error(msg)
             return
+
         self.document.src_file_path = path
         self.document.src_file_type = "video"
         self.path_label.setText(path)
@@ -592,8 +601,32 @@ class MainWindow(QMainWindow):
         media = self.vlc_instance.media_new(path)
         self.mediaplayer.set_media(media)
         self._attach_vlc_output()
-        self.action_play.setText("Pause")
+
+        # Start playing briefly to allow VLC to detect video dimensions
         self.mediaplayer.play()
+
+        # Poll until dimensions are available (non-blocking)
+        timeout_ms = 3000
+        interval_ms = 50
+        elapsed = 0
+        while elapsed < timeout_ms:
+            width = self.mediaplayer.video_get_width()
+            height = self.mediaplayer.video_get_height()
+            if width > 0 and height > 0:
+                self.image_width = width
+                self.image_height = height
+                logger.info(f"Loaded video {path} with size {width}x{height}")
+                break
+            QTimer.singleShot(interval_ms, lambda: None)  # allow event loop
+            elapsed += interval_ms
+        else:
+            # fallback if dimensions cannot be read
+            self.image_width = 1920
+            self.image_height = 1080
+            logger.warning(
+                f"Could not determine video dimensions for {path}, using default 1920x1080")
+
+        self.action_play.setText("Pause")
 
     def open_image_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -610,19 +643,28 @@ class MainWindow(QMainWindow):
             self.status.showMessage(msg, 3000)
             logger.error(msg)
             return
+
         self.document.src_file_path = path
         self.document.src_file_type = "image"
         self.path_label.setText(path)
         self.mediaplayer.stop()
         self.action_play.setText("Play")
+
         img = QImage(path)
         if img.isNull():
             msg = f"Failed to load image {path}"
             self.status.showMessage(msg, 3000)
             logger.error(msg)
             return
+
         self.video_widget.image = img
         self.video_widget.update()
+
+        # Track image dimensions
+        self.image_width = img.width()
+        self.image_height = img.height()
+        logger.info(
+            f"Loaded image {path} with size {self.image_width}x{self.image_height}")
 
     # -----------------------------
     # Video controls
