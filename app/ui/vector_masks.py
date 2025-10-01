@@ -49,20 +49,6 @@ class PolygonShape:
     points: List[Tuple[float, float]]
     id: str
 
-    # JSON serialization compatible with ThyraDocument
-    def to_dict(self):
-        return {
-            "points": self.points,
-            "id": self.id
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict):
-        return cls(
-            points=data["points"],
-            id=data["id"]
-        )
-
     def to_coco_segmentation(self):
         flattened = []
         for x, y in self.points:
