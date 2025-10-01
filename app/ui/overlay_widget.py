@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 import uuid
-from typing import List, Tuple
+from typing import List
 from datetime import datetime
 import logging
 
-from PySide6.QtCore import Qt, QTimer, QRectF
-from PySide6.QtGui import QPainter, QPen, QColor, QPolygonF, QBrush
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QPainter, QPen, QColor
 from PySide6.QtWidgets import QWidget, QMessageBox
 
 from app.computational_geometry.coordinates_convertion import \
-    widget_to_image_coords, compute_video_rect, image_to_widget_coords
+    widget_to_image_coords, compute_video_rect
 from app.ui.polygone_shape import PolygonShape
 from app.ui.bounding_box import BoundingBox
+from app.ui.vector_masks import VectorMask
 
 if TYPE_CHECKING:
     from app.ui.main_window import MainWindow
@@ -46,29 +47,23 @@ class OverlayWidget(QWidget):
                           False)
         self.setMouseTracking(True)
 
+
         self.main_window: MainWindow = None
+        self.mode = "box"  # "box" or "poly"
 
-        # Live drawing state (use *image* coordinates for live storage)
-        self.drawing_box = False
-        self.box_start_img: Tuple[float, float] = (
-            0.0, 0.0)  # absolute image coords
-        self.box_current_img: Tuple[float, float] = (
-            0.0, 0.0)  # absolute image coords
+        # Live drawing state
+        self.current_mask: Optional[VectorMask] = None
 
-        self.drawing_poly = False
-        self.current_poly_img: List[
-            Tuple[float, float]] = []  # absolute image coords
-
+        # Animation
         self.dash_offset = DASH_OFFSET
         self.anim_timer = QTimer(self)
         self.anim_timer.setInterval(ANIMATION_MSEC)
         self.anim_timer.timeout.connect(self._on_anim_tick)
         self.anim_timer.start()
 
-        self.mode = "box"
+        # Colors
         self.box_color = QColor(255, 250, 240)
-        self.live_box_color = QColor(226, 61, 40)
-        self.feedback_point_color = QColor(240, 128, 128)
+        self.live_color = QColor(226, 61, 40)
 
     def set_mode(self, mode: str):
         assert mode in ("box", "poly")
@@ -86,8 +81,15 @@ class OverlayWidget(QWidget):
     def sizeHint(self):
         return self.parent().size()
 
+    def _on_anim_tick(self):
+        self.dash_offset += 1.0
+        if self.dash_offset > 12.0:
+            self.dash_offset = 0.0
+        self.update()
+
+
     # -----------------------------
-    # Mouse events (use image coords for live state)
+    # Mouse events
     # -----------------------------
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
@@ -95,89 +97,67 @@ class OverlayWidget(QWidget):
         img_w = self.main_window.image_width
         img_h = self.main_window.image_height
         widget_w, widget_h = self.width(), self.height()
+        rect = compute_video_rect(img_w, img_h, widget_w, widget_h)
 
-        # get absolute image coords for the press position
         x_img, y_img = widget_to_image_coords(
-            event.position(), img_w, img_h, widget_w, widget_h)
+            event.position(), img_w, img_h, widget_w, widget_h, rect
+        )
 
+        ts = int(datetime.now().timestamp())
         if self.mode == "box":
-            self.drawing_box = True
-            self.box_start_img = (x_img, y_img)
-            self.box_current_img = (x_img, y_img)
+            # Start a new bounding box
+            self.current_mask = BoundingBox(
+                x=x_img / img_w, y=y_img / img_h, w=0.0, h=0.0,
+                id=str(uuid.uuid4()), ts=ts
+            )
         else:
-            self.drawing_poly = True
-            self.current_poly_img = [(x_img, y_img)]
+            # Start a new polygon
+            self.current_mask = PolygonShape(
+                points=[(x_img / img_w, y_img / img_h)],
+                id=str(uuid.uuid4()), ts=ts
+            )
         self.update()
 
     def mouseMoveEvent(self, event):
-        # update live coordinates in image space (if drawing)
-        if not (self.drawing_box or self.drawing_poly):
+        if not self.current_mask:
             return
         img_w = self.main_window.image_width
         img_h = self.main_window.image_height
         widget_w, widget_h = self.width(), self.height()
-
         rect = compute_video_rect(img_w, img_h, widget_w, widget_h)
 
         x_img, y_img = widget_to_image_coords(
-            event.position(), img_w, img_h, widget_w, widget_h, rect)
+            event.position(), img_w, img_h, widget_w, widget_h, rect
+        )
 
-        if self.drawing_box:
-            self.box_current_img = (x_img, y_img)
-        elif self.drawing_poly:
-            # append successive points (image coords)
-            # avoid extremely dense appends — only append if moved at least 1 px in image coords
-            last = self.current_poly_img[-1] if self.current_poly_img else (
-                None, None)
-            if last[0] is None or abs(last[0] - x_img) >= 1.0 or abs(
-                last[1] - y_img) >= 1.0:
-                self.current_poly_img.append((x_img, y_img))
+        if isinstance(self.current_mask, BoundingBox):
+            # Update w/h relative to start point
+            self.current_mask.w = abs(x_img / img_w - self.current_mask.x)
+            self.current_mask.h = abs(y_img / img_h - self.current_mask.y)
+            self.current_mask.x = min(self.current_mask.x, x_img / img_w)
+            self.current_mask.y = min(self.current_mask.y, y_img / img_h)
+        elif isinstance(self.current_mask, PolygonShape):
+            last_x, last_y = self.current_mask.points[-1]
+            if abs(last_x - x_img / img_w) > 0.002 or abs(last_y - y_img / img_h) > 0.002:
+                self.current_mask.points.append((x_img / img_w, y_img / img_h))
+
         self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
-
-        ts = int(datetime.now().timestamp())
-        img_w = self.main_window.image_width
-        img_h = self.main_window.image_height
-
-        if img_w <= 0 or img_h <= 0:
-            # nothing to save
-            self.drawing_box = False
-            self.drawing_poly = False
-            self.current_poly_img = []
+        if not self.current_mask:
             return
 
-        if self.drawing_box and self.mode == "box":
-            self.drawing_box = False
-            p1 = self.box_start_img
-            p2 = self.box_current_img
-            x_abs, y_abs = min(p1[0], p2[0]), min(p1[1], p2[1])
-            w_abs, h_abs = abs(p2[0] - p1[0]), abs(p2[1] - p1[1])
-            if w_abs > 5 and h_abs > 5:
-                # convert to normalized image coords and append to document
-                norm_box = BoundingBox(
-                    x=x_abs / img_w,
-                    y=y_abs / img_h,
-                    w=w_abs / img_w,
-                    h=h_abs / img_h,
-                    id=str(uuid.uuid4()),
-                    ts=ts
-                )
-                self.main_window.document.vector_masks.append(norm_box)
+        # Only keep if valid
+        if isinstance(self.current_mask, BoundingBox):
+            if self.current_mask.w > 0.01 and self.current_mask.h > 0.01:
+                self.main_window.document.vector_masks.append(self.current_mask)
+        elif isinstance(self.current_mask, PolygonShape):
+            if len(self.current_mask.points) >= 3:
+                self.main_window.document.vector_masks.append(self.current_mask)
 
-        elif self.drawing_poly and self.mode == "poly":
-            self.drawing_poly = False
-            if len(self.current_poly_img) >= 3:
-                norm_points = [(x / img_w, y / img_h) for (x, y) in
-                               self.current_poly_img]
-                norm_poly = PolygonShape(points=norm_points,
-                                         id=str(uuid.uuid4()),
-                                         ts=ts)
-                self.main_window.document.vector_masks.append(norm_poly)
-            self.current_poly_img = []
-
+        self.current_mask = None
         self.update()
 
     # -----------------------------
@@ -190,58 +170,17 @@ class OverlayWidget(QWidget):
         img_w = self.main_window.image_width
         img_h = self.main_window.image_height
         widget_w, widget_h = self.width(), self.height()
-
-        # compute rect ONCE per paint
         rect = compute_video_rect(img_w, img_h, widget_w, widget_h)
 
-        # -----------------------------
-        # Draw vector masks (document stores normalized coords)
-        # -----------------------------
+        # Draw finished masks
         pen = self._make_dash_pen(self.box_color, [8.0, 4.0])
-        for vector_mask in self.main_window.document.vector_masks:
-            vector_mask.draw(painter, img_w, img_h,
-                             widget_w, widget_h, rect, pen)
+        for mask in self.main_window.document.vector_masks:
+            mask.draw(painter, img_w, img_h, widget_w, widget_h, rect, pen)
 
-        # -----------------------------
-        # Live box preview (use image coords stored during drawing)
-        # -----------------------------
-        if self.drawing_box and self.mode == "box":
-            try:
-                p1_widget = image_to_widget_coords(
-                    self.box_start_img[0], self.box_start_img[1],
-                    img_w, img_h, widget_w, widget_h, rect)
-                p2_widget = image_to_widget_coords(
-                    self.box_current_img[0], self.box_current_img[1],
-                    img_w, img_h, widget_w, widget_h, rect)
-                live_rect = QRectF(p1_widget, p2_widget)
-                pen_live = self._make_dash_pen(self.live_box_color, [8.0, 4.0])
-                painter.setPen(pen_live)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(live_rect)
-            except Exception:
-                pass
-
-        # -----------------------------
-        # Live polygon preview (use image coords stored during drawing)
-        # -----------------------------
-        if self.drawing_poly and self.current_poly_img:
-            try:
-                pts_widget = [image_to_widget_coords(
-                    x, y, img_w, img_h, widget_w, widget_h, rect) for x, y
-                    in self.current_poly_img]
-                if len(pts_widget) >= 2:
-                    pen_live_poly = self._make_dash_pen(self.live_box_color,
-                                                        [6.0, 6.0])
-                    painter.setPen(pen_live_poly)
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawPolyline(QPolygonF(pts_widget))
-                for p in pts_widget:
-                    painter.setBrush(QBrush(self.feedback_point_color))
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.drawEllipse(p, 3, 3)
-            except Exception:
-                pass
-
+        # Draw live mask
+        if self.current_mask:
+            pen_live = self._make_dash_pen(self.live_color, [6.0, 6.0])
+            self.current_mask.draw(painter, img_w, img_h, widget_w, widget_h, rect, pen_live)
     # -----------------------------
     # Undo / Redo / Clear
     # -----------------------------
@@ -268,10 +207,10 @@ class OverlayWidget(QWidget):
     # -----------------------------
     # Animation
     # -----------------------------
-    def _on_anim_tick(self):
-        self.dash_offset -= 1.5
-        if self.dash_offset < -1000:
-            self.dash_offset = 0
-        # only trigger a repaint if visible
-        if self.isVisible():
-            self.update()
+    # def _on_anim_tick(self):
+    #     self.dash_offset -= 1.5
+    #     if self.dash_offset < -1000:
+    #         self.dash_offset = 0
+    #     # only trigger a repaint if visible
+    #     if self.isVisible():
+    #         self.update()
