@@ -26,12 +26,11 @@ from PySide6.QtGui import QAction, QImage, QIcon
 import vlc
 
 from app.ui.overlay_widget import OverlayWidget
-from app.ui.vector_masks import BoundingBox, PolygonShape
 from app.ui.video_widget import VideoWidget
 from configuration import ICO_DIR, THYRA_DIR, THYRA_VIDEO_DIR, THYRA_IMAGE_DIR, \
     LOGGER_NAME
-from thyra_document import ThyraDocument
-from thyra_settings import ThyraSettings
+from app.thyra_document import ThyraDocument
+from app.thyra_settings import ThyraSettings
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -275,7 +274,7 @@ class MainWindow(QMainWindow):
             [THYRA_DIR, path]) == THYRA_DIR else path
         self.document = ThyraDocument(src_file_path=rel_path,
                                       src_file_type=src_type,
-                                      boxes=[], polygons=[])
+                                      vector_masks=[])
         # save document to file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         fname = f"{timestamp}.json"
@@ -328,7 +327,12 @@ class MainWindow(QMainWindow):
             logger.error(msg)
             return
 
-        self.document = ThyraDocument.from_dict(data)
+        try:
+            self.document = ThyraDocument.from_dict(data)
+        except Exception as e:
+            logger.error(f"Parsing json document failed: {e}")
+            return
+
         self.current_document_file_path = path
 
         # try to open associated media file
@@ -417,66 +421,8 @@ class MainWindow(QMainWindow):
             logger.error(msg)
             return
 
-        canvas_w = self.overlay.width()
-        canvas_h = self.overlay.height()
-        images = [
-            {"id": 1,
-             "file_name": self.document.src_file_path,
-             "width": canvas_w, "height": canvas_h}
-        ]
-        annotations = []
-        categories = [{"id": 1, "name": "shape", "supercategory": "shape"}]
-        ann_id = 1
-
-        # Boxes
-        for _, b in self.document.boxes:
-            bbox = b.to_coco_bbox()
-            area = bbox[2] * bbox[3]
-            annotations.append({
-                "id": ann_id, "image_id": 1, "category_id": 1,
-                "segmentation": [b.to_polygon()],
-                "bbox": bbox, "area": area, "iscrowd": 0
-            })
-            ann_id += 1
-
-        # Polygons
-        for _, p in self.document.polygons:
-            segmentation = p.to_coco_segmentation()
-            xs = [pt[0] for pt in p.points]
-            ys = [pt[1] for pt in p.points]
-            if not xs or not ys:
-                continue
-            x_min, x_max = min(xs), max(xs)
-            y_min, y_max = min(ys), max(ys)
-            bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
-            area = abs(self._polygon_area(p.points))
-            annotations.append({
-                "id": ann_id, "image_id": 1, "category_id": 1,
-                "segmentation": segmentation, "bbox": bbox,
-                "area": area, "iscrowd": 0
-            })
-            ann_id += 1
-
-        coco = {
-            "images": images,
-            "annotations": annotations,
-            "categories": categories
-        }
-
-        # Add _COCO suffix
-        base, ext = os.path.splitext(self.current_document_file_path)
-        out_file_path = f"{base}_COCO.json"
-
-        try:
-            with open(out_file_path, "w", encoding="utf-8") as f:
-                json.dump(coco, f, indent=2)
-            msg = f"Saved COCO JSON: {out_file_path}"
-            self.status.showMessage(msg, 4000)
-            logger.info(msg)
-        except Exception as e:
-            msg = f"Failed to save: {e}"
-            self.status.showMessage(msg, 4000)
-            logger.error(msg)
+        self.document.export_to_coco(self.image_width, self.image_height,
+                                     self.current_document_file_path)
 
     # -----------------------------
     # Event filter

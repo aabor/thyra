@@ -12,7 +12,8 @@ from PySide6.QtWidgets import QWidget, QMessageBox
 
 from app.computational_geometry.coordinates_convertion import \
     widget_to_image_coords, compute_video_rect, image_to_widget_coords
-from app.ui.vector_masks import BoundingBox, PolygonShape
+from app.ui.polygone_shape import PolygonShape
+from app.ui.bounding_box import BoundingBox
 
 if TYPE_CHECKING:
     from app.ui.main_window import MainWindow
@@ -164,7 +165,7 @@ class OverlayWidget(QWidget):
                     id=str(uuid.uuid4()),
                     ts=ts
                 )
-                self.main_window.document.boxes.append(norm_box)
+                self.main_window.document.vector_masks.append(norm_box)
 
         elif self.drawing_poly and self.mode == "poly":
             self.drawing_poly = False
@@ -174,7 +175,7 @@ class OverlayWidget(QWidget):
                 norm_poly = PolygonShape(points=norm_points,
                                          id=str(uuid.uuid4()),
                                          ts=ts)
-                self.main_window.document.polygons.append(norm_poly)
+                self.main_window.document.vector_masks.append(norm_poly)
             self.current_poly_img = []
 
         self.update()
@@ -194,29 +195,12 @@ class OverlayWidget(QWidget):
         rect = compute_video_rect(img_w, img_h, widget_w, widget_h)
 
         # -----------------------------
-        # Draw stored boxes (document stores normalized coords)
+        # Draw vector masks (document stores normalized coords)
         # -----------------------------
-        pen_box = self._make_dash_pen(self.box_color, [8.0, 4.0])
-        for box in self.main_window.document.boxes:
-            try:
-                box.draw(painter, img_w, img_h,
-                         widget_w, widget_h,
-                         rect, pen_box)
-                continue
-            except Exception:
-                continue
-
-        # -----------------------------
-        # Draw stored polygons (normalized points)
-        # -----------------------------
-        pen_poly = self._make_dash_pen(self.box_color, [6.0, 6.0])
-        for poly in self.main_window.document.polygons:
-            try:
-                poly.draw(painter, img_w, img_h,
-                         widget_w, widget_h,
-                         rect, pen_poly)
-            except Exception:
-                continue
+        pen = self._make_dash_pen(self.box_color, [8.0, 4.0])
+        for vector_mask in self.main_window.document.vector_masks:
+            vector_mask.draw(painter, img_w, img_h,
+                             widget_w, widget_h, rect, pen)
 
         # -----------------------------
         # Live box preview (use image coords stored during drawing)
