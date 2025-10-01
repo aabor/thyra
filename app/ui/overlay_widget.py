@@ -47,7 +47,6 @@ class OverlayWidget(QWidget):
                           False)
         self.setMouseTracking(True)
 
-
         self.main_window: MainWindow = None
         self.mode = "box"  # "box" or "poly"
 
@@ -86,7 +85,6 @@ class OverlayWidget(QWidget):
         if self.dash_offset > 12.0:
             self.dash_offset = 0.0
         self.update()
-
 
     # -----------------------------
     # Mouse events
@@ -138,7 +136,8 @@ class OverlayWidget(QWidget):
             self.current_mask.y = min(self.current_mask.y, y_img / img_h)
         elif isinstance(self.current_mask, PolygonShape):
             last_x, last_y = self.current_mask.points[-1]
-            if abs(last_x - x_img / img_w) > 0.002 or abs(last_y - y_img / img_h) > 0.002:
+            if abs(last_x - x_img / img_w) > 0.002 or abs(
+                last_y - y_img / img_h) > 0.002:
                 self.current_mask.points.append((x_img / img_w, y_img / img_h))
 
         self.update()
@@ -180,7 +179,9 @@ class OverlayWidget(QWidget):
         # Draw live mask
         if self.current_mask:
             pen_live = self._make_dash_pen(self.live_color, [6.0, 6.0])
-            self.current_mask.draw(painter, img_w, img_h, widget_w, widget_h, rect, pen_live)
+            self.current_mask.draw(painter, img_w, img_h, widget_w, widget_h,
+                                   rect, pen_live)
+
     # -----------------------------
     # Undo / Redo / Clear
     # -----------------------------
@@ -203,14 +204,3 @@ class OverlayWidget(QWidget):
         if reply == QMessageBox.StandardButton.Ok:
             self.main_window.document.clear()
         self.update()
-
-    # -----------------------------
-    # Animation
-    # -----------------------------
-    # def _on_anim_tick(self):
-    #     self.dash_offset -= 1.5
-    #     if self.dash_offset < -1000:
-    #         self.dash_offset = 0
-    #     # only trigger a repaint if visible
-    #     if self.isVisible():
-    #         self.update()
