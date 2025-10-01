@@ -42,8 +42,8 @@ os.makedirs(THYRA_IMAGE_DIR, exist_ok=True)
 class MainWindow(QMainWindow):
     def __init__(self, app):
         super().__init__()
-        self.image_height = None
-        self.image_width = None
+        self.image_height = 0
+        self.image_width = 0
         self.current_document_file_path = ""
         self.document: ThyraDocument = ThyraDocument()
         self.settings: ThyraSettings = ThyraSettings()

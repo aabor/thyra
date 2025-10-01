@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Union
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json, config
 
@@ -11,27 +11,65 @@ class ThyraDocument:
     src_file_path: str = ""
     src_file_type: str = ""  # 'video' or 'image'
 
-    boxes: List[Tuple[int, BoundingBox]] = field(
+    boxes: List[BoundingBox] = field(
         default_factory=list,
         metadata=config(
             encoder=lambda boxes: [
-                {"ts": ts, **box.to_dict()} for ts, box in boxes
+                box.to_dict() for box in boxes
             ],
             decoder=lambda boxes: [
-                (box.get("ts", 0), BoundingBox.from_dict(box)) for box in boxes
+                BoundingBox.from_dict(box) for box in boxes
             ]
         )
     )
 
-    polygons: List[Tuple[int, PolygonShape]] = field(
+    polygons: List[PolygonShape] = field(
         default_factory=list,
         metadata=config(
             encoder=lambda polys: [
-                {"ts": ts, **poly.to_dict()} for ts, poly in polys
+                poly.to_dict() for poly in polys
             ],
             decoder=lambda polys: [
-                (poly.get("ts", 0), PolygonShape.from_dict(poly)) for poly in
+                PolygonShape.from_dict(poly) for poly in
                 polys
             ]
         )
     )
+
+    def __post_init__(self):
+        self.action_stack: List[Union[BoundingBox, PolygonShape]] = []
+
+    def undo(self):
+        latest = []
+        self.boxes.sort(key=lambda x: x.ts)
+        self.polygons.sort(key=lambda x: x.ts)
+        if self.boxes:
+            latest.append(self.boxes[-1])
+        if self.polygons:
+            latest.append(self.polygons[-1])
+        if not latest:
+            return None
+
+        latest.sort(key=lambda x: x.ts)
+        item = latest[-1]
+        if isinstance(item, BoundingBox):
+            item = self.boxes.pop()
+        elif isinstance(item, PolygonShape):
+            item = self.polygons.pop()
+        self.action_stack.append(item)
+
+    def redo(self)->bool:
+        if not self.action_stack:
+            return False
+        item = self.action_stack.pop()
+        shape = item
+        if isinstance(shape, BoundingBox):
+            self.boxes.append(shape)
+        elif isinstance(shape, PolygonShape):
+            self.polygons.append(shape)
+
+    def clear(self):
+        self.boxes.clear()
+        self.polygons.clear()
+
+
