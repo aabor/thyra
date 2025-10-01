@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple
-from dataclasses_json import dataclass_json
+from dataclasses_json import dataclass_json, config
 
 
 @dataclass_json
@@ -20,7 +20,6 @@ class BoundingBox:
         return [x, y, x + w, y, x + w, y + h, x, y + h]
 
     def normalized(self, canvas_w: float, canvas_h: float) -> dict:
-        """Return a dict with normalized coordinates in [0, 1]."""
         if canvas_w <= 0 or canvas_h <= 0:
             raise ValueError("Canvas size must be positive")
         return {
@@ -33,7 +32,6 @@ class BoundingBox:
 
     @classmethod
     def denormalized(cls, data: dict, canvas_w: float, canvas_h: float):
-        """Reconstruct a BoundingBox from normalized dict."""
         if canvas_w <= 0 or canvas_h <= 0:
             raise ValueError("Canvas size must be positive")
         return cls(
@@ -51,6 +49,20 @@ class PolygonShape:
     points: List[Tuple[float, float]]
     id: str
 
+    # JSON serialization compatible with ThyraDocument
+    def to_dict(self):
+        return {
+            "points": self.points,
+            "id": self.id
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(
+            points=data["points"],
+            id=data["id"]
+        )
+
     def to_coco_segmentation(self):
         flattened = []
         for x, y in self.points:
@@ -58,12 +70,9 @@ class PolygonShape:
         return [flattened]
 
     def normalized(self, canvas_w: float, canvas_h: float) -> dict:
-        """Return a dict with normalized polygon points in [0, 1]."""
         if canvas_w <= 0 or canvas_h <= 0:
             raise ValueError("Canvas size must be positive")
-        norm_points = [
-            (x / canvas_w, y / canvas_h) for (x, y) in self.points
-        ]
+        norm_points = [(x / canvas_w, y / canvas_h) for (x, y) in self.points]
         return {
             "id": self.id,
             "points": norm_points,
@@ -71,10 +80,7 @@ class PolygonShape:
 
     @classmethod
     def denormalized(cls, data: dict, canvas_w: float, canvas_h: float):
-        """Reconstruct a PolygonShape from normalized dict."""
         if canvas_w <= 0 or canvas_h <= 0:
             raise ValueError("Canvas size must be positive")
-        abs_points = [
-            (x * canvas_w, y * canvas_h) for (x, y) in data["points"]
-        ]
+        abs_points = [(x * canvas_w, y * canvas_h) for (x, y) in data["points"]]
         return cls(points=abs_points, id=data["id"])

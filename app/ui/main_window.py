@@ -30,7 +30,8 @@ from app.ui.vector_masks import BoundingBox, PolygonShape
 from app.ui.video_widget import VideoWidget
 from configuration import ICO_DIR, THYRA_DIR, THYRA_VIDEO_DIR, THYRA_IMAGE_DIR, \
     LOGGER_NAME
-from thyra_document import ThyraSettings, ThyraDocument
+from thyra_document import ThyraDocument
+from thyra_settings import ThyraSettings
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -282,11 +283,7 @@ class MainWindow(QMainWindow):
         try:
             with open(out_path, "w", encoding="utf-8") as f:
                 # dataclasses_json provides to_json but keep simple JSON structure
-                json.dump({
-                    "src_file_path": self.document.src_file_path,
-                    "src_file_type": self.document.src_file_type,
-                    "boxes": [], "polygons": []
-                }, f, indent=2)
+                json.dump(self.document.to_dict(), f, indent=2)
             # update settings and remember current document file path
             self.settings.most_recent_document_path = os.path.relpath(
                 out_path, THYRA_DIR)
@@ -331,53 +328,18 @@ class MainWindow(QMainWindow):
             logger.error(msg)
             return
 
-        doc = ThyraDocument()
-        doc.src_file_path = data.get("src_file_path", "")
-        doc.src_file_type = data.get("src_file_type", "")
-
-        # parse boxes (already normalized)
-        doc.boxes = []
-        for entry in data.get("boxes", []):
-            try:
-                ts = int(entry.get("ts", datetime.now().timestamp()))
-                box_obj = BoundingBox(
-                    x=entry["x"],
-                    y=entry["y"],
-                    w=entry["w"],
-                    h=entry["h"],
-                    id=entry["id"]
-                )
-                doc.boxes.append((ts, box_obj))
-            except Exception as e:
-                logger.error(f"Parsing boxes: {e}")
-                continue
-
-        # parse polygons (already normalized)
-        doc.polygons = []
-        for entry in data.get("polygons", []):
-            try:
-                ts = int(entry.get("ts", datetime.now().timestamp()))
-                poly_obj = PolygonShape(
-                    points=entry["points"],
-                    id=entry["id"]
-                )
-                doc.polygons.append((ts, poly_obj))
-            except Exception as e:
-                logger.error(f"Parsing polygons: {e}")
-                continue
-
-        self.document = doc
+        self.document = ThyraDocument.from_dict(data)
         self.current_document_file_path = path
 
         # try to open associated media file
-        src = doc.src_file_path
+        src = self.document.src_file_path
         if src:
-            full_src = src if os.path.isabs(src) else os.path.join(THYRA_DIR,
-                                                                   src)
+            full_src = src if os.path.isabs(src) else os.path.join(
+                THYRA_DIR, src)
             if os.path.exists(full_src):
-                if doc.src_file_type == "image":
+                if self.document.src_file_type == "image":
                     self.open_image(full_src)
-                elif doc.src_file_type == "video":
+                elif self.document.src_file_type == "video":
                     self.open_video(full_src)
                 else:
                     ext = os.path.splitext(full_src)[1].lower()
@@ -399,40 +361,10 @@ class MainWindow(QMainWindow):
             logger.error(msg)
             return
 
-        data = {
-            "src_file_path": self.document.src_file_path,
-            "src_file_type": self.document.src_file_type,
-            "image": {
-                "file_name": os.path.basename(self.document.src_file_path),
-            },
-            "boxes": [],
-            "polygons": [],
-        }
-
-        # boxes (already normalized)
-        for ts, b in self.document.boxes:
-            entry = {
-                "id": b.id,
-                "x": b.x,
-                "y": b.y,
-                "w": b.w,
-                "h": b.h,
-                "ts": ts,
-            }
-            data["boxes"].append(entry)
-
-        # polygons (already normalized)
-        for ts, p in self.document.polygons:
-            entry = {
-                "id": p.id,
-                "points": p.points,
-                "ts": ts,
-            }
-            data["polygons"].append(entry)
-
         try:
             with open(self.current_document_file_path, "w",
                       encoding="utf-8") as f:
+                data = self.document.to_dict()
                 json.dump(data, f, indent=2)
             msg = f"Saved: {self.current_document_file_path}"
             self.status.showMessage(msg, 4000)
