@@ -25,7 +25,7 @@ ANIMATION_MSEC = 30
 
 
 class OverlayWidget(QWidget):
-    """Overlay for drawing boxes/polygons using normalized image coordinates."""
+    """Overlay for drawing boxes/polygons with proper scaling for images and videos."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -59,17 +59,52 @@ class OverlayWidget(QWidget):
         self.mode = mode
 
     # -----------------------------
-    # Coordinate mapping
+    # Video/Image rectangle mapping
     # -----------------------------
-    def widget_to_image_coords(self, pos: QPointF) -> Tuple[float, float]:
-        """Map widget coordinates to image coordinates (taking scaling into account)."""
+    def _compute_video_rect(self) -> QRectF:
+        """Compute the actual rectangle where the image/video is drawn in the widget."""
+        widget_w, widget_h = self.width(), self.height()
         img_w, img_h = self.main_window.image_width, self.main_window.image_height
-        canvas_w, canvas_h = self.width(), self.height()
-        scale_x = img_w / canvas_w
-        scale_y = img_h / canvas_h
-        x_img = pos.x() * scale_x
-        y_img = pos.y() * scale_y
+        if img_w == 0 or img_h == 0:
+            return QRectF(0, 0, widget_w, widget_h)
+
+        widget_ratio = widget_w / widget_h
+        img_ratio = img_w / img_h
+
+        if widget_ratio > img_ratio:
+            # Widget is wider → video height fits, horizontal padding
+            height = widget_h
+            width = img_ratio * height
+            x_offset = (widget_w - width) / 2
+            y_offset = 0
+        else:
+            # Widget is taller → video width fits, vertical padding
+            width = widget_w
+            height = width / img_ratio
+            x_offset = 0
+            y_offset = (widget_h - height) / 2
+
+        return QRectF(x_offset, y_offset, width, height)
+
+    def widget_to_image_coords(self, pos: QPointF) -> Tuple[float, float]:
+        """Map widget coordinates to image/video coordinates, considering padding."""
+        rect = self._compute_video_rect()
+        x_img = (pos.x() - rect.x()) / rect.width() * self.main_window.image_width
+        y_img = (pos.y() - rect.y()) / rect.height() * self.main_window.image_height
+        # Clamp to image bounds
+        x_img = max(0.0, min(self.main_window.image_width, x_img))
+        y_img = max(0.0, min(self.main_window.image_height, y_img))
         return x_img, y_img
+
+    def image_to_widget_coords(self, x_norm: float, y_norm: float) -> QPointF:
+        """Map normalized image coordinates to widget coordinates."""
+        rect = self._compute_video_rect()
+        x_widget = rect.x() + x_norm * rect.width()
+        y_widget = rect.y() + y_norm * rect.height()
+        return QPointF(x_widget, y_widget)
+
+    def sizeHint(self):
+        return self.parent().size()
 
     # -----------------------------
     # Mouse events
@@ -95,7 +130,7 @@ class OverlayWidget(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             ts = int(datetime.now().timestamp())
-            image_w, image_h = self.main_window.image_width, self.main_window.image_height
+            img_w, img_h = self.main_window.image_width, self.main_window.image_height
 
             if self.drawing_box and self.mode == "box":
                 self.drawing_box = False
@@ -104,12 +139,11 @@ class OverlayWidget(QWidget):
                 x, y = min(p1_img[0], p2_img[0]), min(p1_img[1], p2_img[1])
                 w, h = abs(p2_img[0] - p1_img[0]), abs(p2_img[1] - p1_img[1])
                 if w > 5 and h > 5:
-                    # convert to normalized image coordinates
                     norm_box = BoundingBox(
-                        x=x / image_w,
-                        y=y / image_h,
-                        w=w / image_w,
-                        h=h / image_h,
+                        x=x / img_w,
+                        y=y / img_h,
+                        w=w / img_w,
+                        h=h / img_h,
                         id=str(uuid.uuid4())
                     )
                     self.main_window.document.boxes.append((ts, norm_box))
@@ -119,7 +153,7 @@ class OverlayWidget(QWidget):
                     norm_points = []
                     for pt in self.current_poly:
                         x_img, y_img = self.widget_to_image_coords(QPointF(pt[0], pt[1]))
-                        norm_points.append((x_img / image_w, y_img / image_h))
+                        norm_points.append((x_img / img_w, y_img / img_h))
                     norm_poly = PolygonShape(points=norm_points, id=str(uuid.uuid4()))
                     self.main_window.document.polygons.append((ts, norm_poly))
                 self.drawing_poly = False
@@ -189,17 +223,14 @@ class OverlayWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        canvas_w = self.width()
-        canvas_h = self.height()
-        img_w = self.main_window.image_width
-        img_h = self.main_window.image_height
-        scale_x = canvas_w / img_w
-        scale_y = canvas_h / img_h
 
-        # draw boxes
+        # -----------------------------
+        # Draw stored boxes
+        # -----------------------------
         for _, box in self.main_window.document.boxes:
-            rect = QRectF(box.x * img_w * scale_x, box.y * img_h * scale_y,
-                          box.w * img_w * scale_x, box.h * img_h * scale_y)
+            p1 = self.image_to_widget_coords(box.x, box.y)
+            p2 = self.image_to_widget_coords(box.x + box.w, box.y + box.h)
+            rect = QRectF(p1, p2)
             pen = QPen(self.box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([8.0, 4.0])
             pen.setDashOffset(self.dash_offset)
@@ -207,9 +238,11 @@ class OverlayWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
 
-        # draw polygons
+        # -----------------------------
+        # Draw stored polygons
+        # -----------------------------
         for _, poly in self.main_window.document.polygons:
-            pts = [QPointF(x * img_w * scale_x, y * img_h * scale_y) for x, y in poly.points]
+            pts = [self.image_to_widget_coords(x, y) for x, y in poly.points]
             if len(pts) >= 3:
                 pen = QPen(self.box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
                 pen.setDashPattern([6.0, 6.0])
@@ -217,15 +250,17 @@ class OverlayWidget(QWidget):
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawPolygon(QPolygonF(pts))
-            # feedback points
             for p in pts:
                 painter.setBrush(QBrush(self.feedback_point_color))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawEllipse(p, 3, 3)
 
-        # live box preview
+        # -----------------------------
+        # Live box preview
+        # -----------------------------
         if self.drawing_box and self.mode == "box":
-            p1, p2 = self.box_start, self.box_current
+            p1 = self.box_start
+            p2 = self.box_current
             rect = QRectF(min(p1.x(), p2.x()), min(p1.y(), p2.y()),
                           abs(p2.x() - p1.x()), abs(p2.y() - p1.y()))
             pen = QPen(self.live_box_color, PEN_WIDTH, Qt.PenStyle.CustomDashLine)
@@ -235,7 +270,9 @@ class OverlayWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
 
-        # live polygon preview
+        # -----------------------------
+        # Live polygon preview
+        # -----------------------------
         if self.drawing_poly and self.current_poly:
             pts = [QPointF(x, y) for x, y in self.current_poly]
             if len(pts) >= PEN_WIDTH:
