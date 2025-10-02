@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from dataclasses_json import dataclass_json
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QPainter, QPen
+from PySide6.QtGui import QPainter, QPen, QColor
 
 from app.computational_geometry.coordinates_convertion import \
     image_to_widget_coords
@@ -19,6 +19,9 @@ class BoundingBox(VectorMask):
     h: float
     id: str
     ts: int  # timestamp
+
+    def __post_init__(self):
+        self.selected = False
 
     def draw(self, painter: QPainter,
              img_w: int, img_h: int, widget_w: int, widget_h: int,
@@ -38,6 +41,39 @@ class BoundingBox(VectorMask):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(draw_rect)
+
+    def update(self, x_img_norm: float, y_img_norm: float):
+        """Update width/height of bounding box based on mouse movement (normalized coords)."""
+        self.w = abs(x_img_norm - self.x)
+        self.h = abs(y_img_norm - self.y)
+        self.x = min(self.x, x_img_norm)
+        self.y = min(self.y, y_img_norm)
+    def move(self, dx: float, dy: float):
+        """Move box in normalized coordinates, clamped inside [0,1]."""
+        self.x = min(max(self.x + dx, 0.0), 1.0 - self.w)
+        self.y = min(max(self.y + dy, 0.0), 1.0 - self.h)
+
+    def contains(self, nx: float, ny: float) -> bool:
+        """Check if normalized point (nx,ny) is inside the box."""
+        return (self.x <= nx <= self.x + self.w) and (
+            self.y <= ny <= self.y + self.h)
+
+    def draw_points(self, painter, img_w, img_h, widget_w, widget_h, rect,
+                    color=QColor(180, 180, 180)):
+        """Draw small grey squares at corners."""
+        from PySide6.QtGui import QPen
+        pen = QPen(color, 2)
+        painter.setPen(pen)
+        corners = [
+            (self.x, self.y),
+            (self.x + self.w, self.y),
+            (self.x, self.y + self.h),
+            (self.x + self.w, self.y + self.h),
+        ]
+        for nx, ny in corners:
+            px = rect.left() + nx * rect.width()
+            py = rect.top() + ny * rect.height()
+            painter.drawEllipse(int(px) - 3, int(py) - 3, 6, 6)
 
     def export_to_coco(self, image_id: int, ann_id: int, image_w: int,
                        image_h: int) -> dict:

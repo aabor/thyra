@@ -4,6 +4,8 @@ from typing import List
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json, config
 
+from app.ui.bounding_box import BoundingBox
+from app.ui.polygone_shape import PolygonShape
 from app.ui.vector_masks import vector_masks_encoder, vector_masks_decoder, \
     VectorMask
 
@@ -22,6 +24,34 @@ class ThyraDocument:
 
     def __post_init__(self):
         self.action_stack: List[VectorMask] = []
+
+    def append_vector_mask(self, vector_mask: VectorMask) -> bool:
+        """Append vector mask if valid, return True if appended."""
+        if vector_mask is None:
+            return False
+
+        # BoundingBox: require non-trivial width/height
+        if isinstance(vector_mask, BoundingBox):
+            if vector_mask.w > 0.01 and vector_mask.h > 0.01:
+                self.vector_masks.append(vector_mask)
+                return True
+            return False
+
+        # PolygonShape: require at least 3 points
+        elif isinstance(vector_mask, PolygonShape):
+            if len(vector_mask.points) >= 3:
+                self.vector_masks.append(vector_mask)
+                return True
+            return False
+
+        # For other VectorMask types, just append
+        self.vector_masks.append(vector_mask)
+        return True
+
+    def delete_vector_mask(self, vector_mask: VectorMask):
+        if vector_mask in self.vector_masks:
+            self.vector_masks.remove(vector_mask)
+            self.action_stack.append(vector_mask)
 
     def undo(self):
         latest = []

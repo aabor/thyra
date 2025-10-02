@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional
-import uuid
 from typing import List
-from datetime import datetime
 import logging
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPainter, QPen, QColor
+from PySide6.QtGui import QPainter, QPen, QColor, QKeySequence
 from PySide6.QtWidgets import QWidget, QMessageBox
 
 from app.computational_geometry.coordinates_convertion import \
     widget_to_image_coords, compute_video_rect
-from app.ui.polygone_shape import PolygonShape
-from app.ui.bounding_box import BoundingBox
 from app.ui.vector_masks import VectorMask
 
 if TYPE_CHECKING:
@@ -46,12 +42,16 @@ class OverlayWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,
                           False)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.main_window: MainWindow = None
         self.mode = "box"  # "box" or "poly"
+        self.dragging = False
+        self.last_mouse_pos = None
 
         # Live drawing state
         self.current_mask: Optional[VectorMask] = None
+        self.selected_mask: Optional[VectorMask] = None
 
         # Animation
         self.dash_offset = DASH_OFFSET
@@ -90,73 +90,115 @@ class OverlayWidget(QWidget):
     # Mouse events
     # -----------------------------
     def mousePressEvent(self, event):
+        self.setFocus()
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        img_w = self.main_window.image_width
-        img_h = self.main_window.image_height
+
+        img_w, img_h = self.main_window.image_width, self.main_window.image_height
         widget_w, widget_h = self.width(), self.height()
         rect = compute_video_rect(img_w, img_h, widget_w, widget_h)
-
         x_img, y_img = widget_to_image_coords(
             event.position(), img_w, img_h, widget_w, widget_h, rect
         )
+        x_img_norm, y_img_norm = x_img / img_w, y_img / img_h
 
-        ts = int(datetime.now().timestamp())
-        if self.mode == "box":
-            # Start a new bounding box
-            self.current_mask = BoundingBox(
-                x=x_img / img_w, y=y_img / img_h, w=0.0, h=0.0,
-                id=str(uuid.uuid4()), ts=ts
-            )
-        else:
-            # Start a new polygon
-            self.current_mask = PolygonShape(
-                points=[(x_img / img_w, y_img / img_h)],
-                id=str(uuid.uuid4()), ts=ts
-            )
+        # Start dragging existing mask if selected
+        if self.selected_mask and self.selected_mask.contains(x_img_norm,
+                                                              y_img_norm):
+            self.dragging = True
+            self.last_mouse_pos = event.position()
+            return
+
+        # Otherwise, start drawing a new mask
+        self.dragging = False
+        self.last_mouse_pos = None
+        self.current_mask = VectorMask.create(self.mode, x_img_norm, y_img_norm)
         self.update()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        img_w, img_h = self.main_window.image_width, self.main_window.image_height
+        widget_w, widget_h = self.width(), self.height()
+        rect = compute_video_rect(img_w, img_h, widget_w, widget_h)
+        nx, ny = widget_to_image_coords(event.position(), img_w, img_h,
+                                        widget_w, widget_h, rect)
+        nx, ny = nx / img_w, ny / img_h
+
+        # Hit test existing masks (from topmost)
+        for mask in reversed(self.main_window.document.vector_masks):
+            if mask.contains(nx, ny):
+                self.selected_mask = mask
+                self.current_mask = None  # stop drawing
+                self.dragging = False
+                self.update()
+                return
+
+        # Clicked empty space -> deselect mask and return to drawing mode
+        self.selected_mask = None
+        self.current_mask = None
+        self.dragging = False
+        self.set_mode("box")  # reset to drawing boxes
+        self.update()
+
+    def keyPressEvent(self, event):
+        if self.selected_mask and event.key() in (
+            Qt.Key.Key_Delete, Qt.Key.Key_Backspace
+        ):
+            self.main_window.document.delete_vector_mask(self.selected_mask)
+            self.selected_mask = None
+            self.update()
+            return
+
+        # Undo/Redo
+        if event.matches(QKeySequence.StandardKey.Undo):
+            self.undo()
+            return
+        if event.matches(QKeySequence.StandardKey.Redo):
+            self.redo()
+            return
+
+        super().keyPressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if not self.current_mask:
-            return
-        img_w = self.main_window.image_width
-        img_h = self.main_window.image_height
+        img_w, img_h = self.main_window.image_width, self.main_window.image_height
         widget_w, widget_h = self.width(), self.height()
         rect = compute_video_rect(img_w, img_h, widget_w, widget_h)
-
         x_img, y_img = widget_to_image_coords(
             event.position(), img_w, img_h, widget_w, widget_h, rect
         )
+        x_img_norm, y_img_norm = x_img / img_w, y_img / img_h
 
-        if isinstance(self.current_mask, BoundingBox):
-            # Update w/h relative to start point
-            self.current_mask.w = abs(x_img / img_w - self.current_mask.x)
-            self.current_mask.h = abs(y_img / img_h - self.current_mask.y)
-            self.current_mask.x = min(self.current_mask.x, x_img / img_w)
-            self.current_mask.y = min(self.current_mask.y, y_img / img_h)
-        elif isinstance(self.current_mask, PolygonShape):
-            last_x, last_y = self.current_mask.points[-1]
-            if abs(last_x - x_img / img_w) > 0.002 or abs(
-                last_y - y_img / img_h) > 0.002:
-                self.current_mask.points.append((x_img / img_w, y_img / img_h))
+        # Move selected mask
+        if self.dragging and self.selected_mask:
+            dx = (event.position().x() - self.last_mouse_pos.x()) / self.width()
+            dy = (
+                     event.position().y() - self.last_mouse_pos.y()) / self.height()
+            self.selected_mask.move(dx, dy)
+            self.last_mouse_pos = event.position()
+            self.update()
+            return
 
-        self.update()
+        # Update live drawing
+        if self.current_mask:
+            self.current_mask.update(x_img_norm, y_img_norm)
+            self.update()
+            return
+
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        if not self.current_mask:
-            return
 
-        # Only keep if valid
-        if isinstance(self.current_mask, BoundingBox):
-            if self.current_mask.w > 0.01 and self.current_mask.h > 0.01:
-                self.main_window.document.vector_masks.append(self.current_mask)
-        elif isinstance(self.current_mask, PolygonShape):
-            if len(self.current_mask.points) >= 3:
-                self.main_window.document.vector_masks.append(self.current_mask)
+        if self.dragging:
+            self.dragging = False
+            self.last_mouse_pos = None
+        elif self.current_mask:
+            self.main_window.document.append_vector_mask(self.current_mask)
+            self.current_mask = None
 
-        self.current_mask = None
         self.update()
 
     # -----------------------------
@@ -181,6 +223,11 @@ class OverlayWidget(QWidget):
             pen_live = self._make_dash_pen(self.live_color, [6.0, 6.0])
             self.current_mask.draw(painter, img_w, img_h, widget_w, widget_h,
                                    rect, pen_live)
+
+        # Draw selection feedback points
+        if self.selected_mask:
+            self.selected_mask.draw_points(
+                painter, img_w, img_h, widget_w, widget_h, rect)
 
     # -----------------------------
     # Undo / Redo / Clear

@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         toolbar.setIconSize(QSize(18, 18))
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
         self._setup_toolbar(toolbar)
+        self.set_draw_mode(self.overlay.mode)
 
         # Status bar
         self.status = QStatusBar()
@@ -570,8 +571,10 @@ class MainWindow(QMainWindow):
     # -----------------------------
     def set_draw_mode(self, mode: str):
         self.overlay.set_mode(mode)
-        self.action_mode_box.setChecked(mode == "box")
-        self.action_mode_poly.setChecked(mode == "poly")
+        # Only check the button if we are not editing an existing mask
+        if self.overlay.selected_mask is None:
+            self.action_mode_box.setChecked(mode == "box")
+            self.action_mode_poly.setChecked(mode == "poly")
 
     @staticmethod
     def _polygon_area(points: List[Tuple[float, float]]) -> float:
