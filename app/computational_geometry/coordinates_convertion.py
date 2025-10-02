@@ -1,6 +1,4 @@
-# -----------------------------
-# Video/Image rectangle mapping
-# -----------------------------
+from __future__ import annotations
 from typing import Tuple
 
 from PySide6.QtCore import QRectF, QPointF

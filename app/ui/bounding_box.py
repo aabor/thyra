@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from typing import List, Tuple
+
 from dataclasses_json import dataclass_json
 
 from PySide6.QtCore import QRectF, Qt
@@ -23,6 +25,14 @@ class BoundingBox(VectorMask):
     def __post_init__(self):
         self.selected = False
 
+    def get_points(self) -> List[Tuple[float, float]]:
+        # Returns corners in order: top-left, top-right, bottom-right, bottom-left
+        return [
+            (self.x, self.y),
+            (self.x + self.w, self.y),
+            (self.x + self.w, self.y + self.h),
+            (self.x, self.y + self.h),
+        ]
     def draw(self, painter: QPainter,
              img_w: int, img_h: int, widget_w: int, widget_h: int,
              rect: QRectF, pen: QPen):
@@ -43,11 +53,18 @@ class BoundingBox(VectorMask):
         painter.drawRect(draw_rect)
 
     def update(self, x_img_norm: float, y_img_norm: float):
-        """Update width/height of bounding box based on mouse movement (normalized coords)."""
-        self.w = abs(x_img_norm - self.x)
-        self.h = abs(y_img_norm - self.y)
-        self.x = min(self.x, x_img_norm)
-        self.y = min(self.y, y_img_norm)
+        """
+        Update bounding box coordinates based on new normalized point.
+        Works for live drawing: first corner is self.x/self.y,
+        second corner is x_img_norm/y_img_norm.
+        Allows both expansion and shrinking.
+        """
+        x0 = self.x
+        y0 = self.y
+        self.x = min(x0, x_img_norm)
+        self.y = min(y0, y_img_norm)
+        self.w = abs(x_img_norm - x0)
+        self.h = abs(y_img_norm - y0)
 
     def smooth(self, image_width: int, image_height: int,
                screen_width_mm: float = None, screen_height_mm: float = None,
@@ -65,21 +82,57 @@ class BoundingBox(VectorMask):
             self.y <= ny <= self.y + self.h)
 
     def draw_points(self, painter, img_w, img_h, widget_w, widget_h, rect,
+                    active_index: int | None = None,
                     color=QColor(180, 180, 180)):
-        """Draw small grey squares at corners."""
+        """Corners index order: 0=(x,y), 1=(x+w,y), 2=(x+w,y+h), 3=(x,y+h)"""
         from PySide6.QtGui import QPen
         pen = QPen(color, 2)
         painter.setPen(pen)
         corners = [
             (self.x, self.y),
             (self.x + self.w, self.y),
-            (self.x, self.y + self.h),
             (self.x + self.w, self.y + self.h),
+            (self.x, self.y + self.h),
         ]
-        for nx, ny in corners:
+        for idx, (nx, ny) in enumerate(corners):
             px = rect.left() + nx * rect.width()
             py = rect.top() + ny * rect.height()
-            painter.drawEllipse(int(px) - 3, int(py) - 3, 6, 6)
+            if active_index is not None and idx == active_index:
+                # highlight active point larger
+                painter.drawEllipse(int(px) - 5, int(py) - 5, 10, 10)
+            else:
+                painter.drawEllipse(int(px) - 3, int(py) - 3, 6, 6)
+
+    def move_point(self, index: int, nx: float, ny: float) -> None:
+        """
+        Move one corner of the bounding box, supporting shrinking and expanding.
+        Corner indices: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left
+        """
+        # Clamp to [0,1]
+        nx = max(0.0, min(1.0, nx))
+        ny = max(0.0, min(1.0, ny))
+
+        # Determine opposite corner (fixed)
+        if index == 0:  # top-left
+            x_fixed, y_fixed = self.x + self.w, self.y + self.h
+        elif index == 1:  # top-right
+            x_fixed, y_fixed = self.x, self.y + self.h
+        elif index == 2:  # bottom-right
+            x_fixed, y_fixed = self.x, self.y
+        elif index == 3:  # bottom-left
+            x_fixed, y_fixed = self.x + self.w, self.y
+        else:
+            return
+
+        # Recompute bounding box coordinates
+        self.x = min(nx, x_fixed)
+        self.y = min(ny, y_fixed)
+        self.w = abs(nx - x_fixed)
+        self.h = abs(ny - y_fixed)
+
+    def delete_point(self, index: int) -> bool:
+        # Not applicable for bounding box — no deletion of corners.
+        return False
 
     def export_to_coco(self, image_id: int, ann_id: int, image_w: int,
                        image_h: int) -> dict:

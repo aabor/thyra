@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Dict, Type, List
+from typing import Dict, Type, List, Tuple
 from abc import ABC, abstractmethod
 
 from dataclasses import dataclass
@@ -37,6 +37,11 @@ class VectorMask(ABC):
             raise ValueError(f"Unknown mask_type: {mask_type}")
 
     @abstractmethod
+    def get_points(self) -> List[Tuple[float, float]]:
+        """Return a list of normalized (x,y) points defining the mask."""
+        pass
+
+    @abstractmethod
     def draw(self, painter: QPainter,
              img_w: int, img_h: int, widget_w: int, widget_h: int,
              rect: QRectF, pen: QPen):
@@ -63,7 +68,21 @@ class VectorMask(ABC):
 
     @abstractmethod
     def draw_points(self, painter, img_w, img_h, widget_w, widget_h, rect,
+                    active_index: int | None = None,
                     color=QColor(180, 180, 180)):
+        raise NotImplementedError
+
+    @abstractmethod
+    def move_point(self, index: int, nx: float, ny: float) -> None:
+        """Move vertex/corner `index` to normalized coords (nx,ny)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_point(self, index: int) -> bool:
+        """
+        Delete vertex/corner at `index` (if supported).
+        Return True if deletion happened.
+        """
         raise NotImplementedError
 
     @abstractmethod

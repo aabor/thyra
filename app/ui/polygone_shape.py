@@ -26,6 +26,9 @@ class PolygonShape(VectorMask):
     def __post_init__(self):
         self.selected = False
 
+    def get_points(self) -> List[Tuple[float, float]]:
+        return self.points
+
     def draw(self, painter: QPainter,
              img_w: int, img_h: int, widget_w: int, widget_h: int,
              rect: QRectF, pen: QPen):
@@ -121,6 +124,27 @@ class PolygonShape(VectorMask):
             new_points.append((nx, ny))
         self.points = new_points
 
+    def move_point(self, index: int, nx: float, ny: float) -> None:
+        """Move single vertex at `index` to normalized coords (nx,ny)."""
+        if index < 0 or index >= len(self.points):
+            return
+        nx = min(max(nx, 0.0), 1.0)
+        ny = min(max(ny, 0.0), 1.0)
+        pts = list(self.points)
+        pts[index] = (nx, ny)
+        self.points = pts
+
+    def delete_point(self, index: int) -> bool:
+        """Delete a specific vertex if polygon will still have >= 3 points."""
+        if len(self.points) <= 3:
+            return False
+        if index < 0 or index >= len(self.points):
+            return False
+        pts = list(self.points)
+        pts.pop(index)
+        self.points = pts
+        return True
+
     def contains(self, nx: float, ny: float) -> bool:
         """Ray casting point-in-polygon check in normalized coords."""
         inside = False
@@ -136,14 +160,17 @@ class PolygonShape(VectorMask):
         return inside
 
     def draw_points(self, painter, img_w, img_h, widget_w, widget_h, rect,
+                    active_index: int | None = None,
                     color=QColor(180, 180, 180)):
-        """Draw small grey points for polygon vertices."""
         pen = QPen(color, 2)
         painter.setPen(pen)
-        for nx, ny in self.points:
+        for idx, (nx, ny) in enumerate(self.points):
             px = rect.left() + nx * rect.width()
             py = rect.top() + ny * rect.height()
-            painter.drawEllipse(int(px) - 3, int(py) - 3, 6, 6)
+            if active_index is not None and idx == active_index:
+                painter.drawEllipse(int(px) - 5, int(py) - 5, 10, 10)
+            else:
+                painter.drawEllipse(int(px) - 3, int(py) - 3, 6, 6)
 
     def export_to_coco(self, image_id: int, ann_id: int, image_w: int,
                        image_h: int) -> dict:
