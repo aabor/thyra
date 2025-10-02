@@ -25,7 +25,11 @@ class ThyraDocument:
     def __post_init__(self):
         self.action_stack: List[VectorMask] = []
 
-    def append_vector_mask(self, vector_mask: VectorMask) -> bool:
+    def append_vector_mask(self, vector_mask: VectorMask,
+                           image_width: int, image_height: int,
+                           screen_width_mm: float,
+                           screen_height_mm: float
+                           ) -> bool:
         """Append vector mask if valid, return True if appended."""
         if vector_mask is None:
             return False
@@ -40,6 +44,8 @@ class ThyraDocument:
         # PolygonShape: require at least 3 points
         elif isinstance(vector_mask, PolygonShape):
             if len(vector_mask.points) >= 3:
+                vector_mask.smooth(image_width, image_height,
+                                   screen_width_mm, screen_height_mm)
                 self.vector_masks.append(vector_mask)
                 return True
             return False
@@ -54,7 +60,6 @@ class ThyraDocument:
             self.action_stack.append(vector_mask)
 
     def undo(self):
-        latest = []
         self.vector_masks.sort(key=lambda x: x.ts)
         if self.vector_masks:
             item = self.vector_masks.pop()

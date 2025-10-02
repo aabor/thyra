@@ -48,6 +48,12 @@ class BoundingBox(VectorMask):
         self.h = abs(y_img_norm - self.y)
         self.x = min(self.x, x_img_norm)
         self.y = min(self.y, y_img_norm)
+
+    def smooth(self, image_width: int, image_height: int,
+               screen_width_mm: float = None, screen_height_mm: float = None,
+               min_point_distance_mm: float = 3.0):
+        pass
+
     def move(self, dx: float, dy: float):
         """Move box in normalized coordinates, clamped inside [0,1]."""
         self.x = min(max(self.x + dx, 0.0), 1.0 - self.w)

@@ -2,6 +2,11 @@ from dataclasses_json import dataclass_json
 from dataclasses import dataclass
 from typing import List, Tuple
 
+import numpy as np
+from scipy.interpolate import splprep, splev
+from shapely.geometry import LineString
+from shapely.ops import unary_union
+
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QPainter, QPen, QPolygonF, QColor
 
@@ -38,6 +43,74 @@ class PolygonShape(VectorMask):
         last_x, last_y = self.points[-1]
         if abs(last_x - x_img_norm) > 0.002 or abs(last_y - y_img_norm) > 0.002:
             self.points.append((x_img_norm, y_img_norm))
+
+    def smooth(self, image_width: int, image_height: int,
+               screen_width_mm: float = None, screen_height_mm: float = None,
+               min_point_distance_mm: float = 3.0):
+        """
+        Smooth polygon after drawing:
+        - Redistribute points along spline curve.
+        - Remove self-intersections using low-level geometry operations.
+        - Remove points closer than min_point_distance_mm (screen mm).
+        - Convert points back to normalized coordinates.
+        """
+        if len(self.points) < 3:
+            return
+
+        # Convert normalized points to absolute pixels
+        pts_px = np.array(
+            [(x * image_width, y * image_height) for x, y in self.points])
+        x, y = pts_px[:, 0], pts_px[:, 1]
+
+        # Convert to screen mm
+        scale_x = screen_width_mm / image_width
+        scale_y = screen_height_mm / image_height
+        x_mm, y_mm = x * scale_x, y * scale_y
+
+        # Close polygon for spline
+        x_closed = np.append(x_mm, x_mm[0])
+        y_closed = np.append(y_mm, y_mm[0])
+
+        # --- Periodic spline ---
+        try:
+            tck, _ = splprep([x_closed, y_closed], s=0, per=True)
+        except Exception:
+            self.points = [(xi / image_width, yi / image_height) for xi, yi in
+                           zip(x, y)]
+            return
+
+        # Evaluate spline densely
+        perimeter_mm = np.sum(
+            np.sqrt(np.diff(x_closed) ** 2 + np.diff(y_closed) ** 2))
+        num_points = max(int(perimeter_mm / min_point_distance_mm * 2),
+                         len(self.points) * 2)
+        u_new = np.linspace(0, 1, num_points)
+        x_spline, y_spline = splev(u_new, tck)
+
+        # --- Remove self-intersections ---
+        line = LineString(np.column_stack([x_spline, y_spline]))
+        simple_line = unary_union(line)  # removes self-intersections
+        if simple_line.geom_type == "LineString":
+            coords = list(simple_line.coords)
+        elif simple_line.geom_type == "MultiLineString":
+            # take the longest line as approximation
+            coords = max((list(ls.coords) for ls in simple_line.geoms),
+                         key=lambda c: len(c))
+        else:
+            coords = list(np.column_stack([x_spline, y_spline]))
+
+        # Filter points too close
+        new_pts_mm = [coords[0]]
+        for pt in coords[1:]:
+            prev_pt = new_pts_mm[-1]
+            dist_mm = np.linalg.norm(np.array(pt) - np.array(prev_pt))
+            if dist_mm >= min_point_distance_mm:
+                new_pts_mm.append(pt)
+
+        # Convert back to normalized coordinates
+        self.points = [
+            (x_mm / scale_x / image_width, y_mm / scale_y / image_height)
+            for x_mm, y_mm in new_pts_mm]
 
     def move(self, dx: float, dy: float):
         """Move polygon in normalized coordinates, clamped inside [0,1]."""

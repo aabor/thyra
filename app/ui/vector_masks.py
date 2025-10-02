@@ -15,7 +15,8 @@ from dataclasses_json import dataclass_json
 class VectorMask(ABC):
 
     @classmethod
-    def create(cls, mask_type: str, x: float = 0.0, y: float = 0.0) -> 'VectorMask':
+    def create(cls, mask_type: str, x: float = 0.0,
+               y: float = 0.0) -> 'VectorMask':
         """
         Factory method to create a new VectorMask subclass instance.
         Args:
@@ -34,6 +35,7 @@ class VectorMask(ABC):
             return PolygonShape(points=[(x, y)], id=new_id, ts=ts)
         else:
             raise ValueError(f"Unknown mask_type: {mask_type}")
+
     @abstractmethod
     def draw(self, painter: QPainter,
              img_w: int, img_h: int, widget_w: int, widget_h: int,
@@ -43,6 +45,13 @@ class VectorMask(ABC):
     def update(self, x_img_norm: float, y_img_norm: float):
         """Update the mask using the current mouse position (normalized coordinates)."""
         raise NotImplementedError
+
+    @abstractmethod
+    def smooth(self, image_width: int, image_height: int,
+               screen_width_mm: float = None, screen_height_mm: float = None,
+               min_point_distance_mm: float = 3.0):
+        """Smooth the vector mask after completion. Stub in base class."""
+        pass
 
     @abstractmethod
     def move(self, dx: float, dy: float):

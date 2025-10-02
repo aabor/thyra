@@ -6,7 +6,7 @@ import logging
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QKeySequence
-from PySide6.QtWidgets import QWidget, QMessageBox
+from PySide6.QtWidgets import QWidget, QMessageBox, QApplication
 
 from app.computational_geometry.coordinates_convertion import \
     widget_to_image_coords, compute_video_rect
@@ -43,6 +43,12 @@ class OverlayWidget(QWidget):
                           False)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        screen = QApplication.primaryScreen()
+        dpi_x = screen.physicalDotsPerInchX()
+        dpi_y = screen.physicalDotsPerInchY()
+        self.screen_width_mm = screen.size().width() / dpi_x * 25.4
+        self.screen_height_mm = screen.size().height() / dpi_y * 25.4
 
         self.main_window: MainWindow = None
         self.mode = "box"  # "box" or "poly"
@@ -196,9 +202,15 @@ class OverlayWidget(QWidget):
             self.dragging = False
             self.last_mouse_pos = None
         elif self.current_mask:
-            self.main_window.document.append_vector_mask(self.current_mask)
+            img_w, img_h = self.main_window.image_width, self.main_window.image_height
+            # Pass image dimensions to append_vector_mask for smoothing
+            self.main_window.document.append_vector_mask(
+                self.current_mask,
+                image_width=img_w, image_height=img_h,
+                screen_width_mm=self.screen_width_mm, \
+                screen_height_mm=self.screen_height_mm
+            )
             self.current_mask = None
-
         self.update()
 
     # -----------------------------
